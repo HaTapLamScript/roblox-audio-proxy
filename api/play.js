@@ -4,49 +4,69 @@ module.exports = async (req, res) => {
     const { url } = req.query;
 
     if (!url) {
-        return res.status(400).send("Thiếu tham số ?url=");
+        return res.status(400).send("Thieu tham so ?url=");
     }
 
     try {
-        // Cấu hình Cookie chuyên nghiệp sử dụng createAgent của @distube/ytdl-core
         const cookieString = process.env.YOUTUBE_COOKIE;
         let agentOptions = {};
         
+        // Cấu hình Cookie xác thực cao cấp chống bot của YouTube
         if (cookieString) {
             try {
-                // Xử lý cookie nếu bạn lưu trong biến môi trường dưới dạng JSON Array (chuẩn nhất)
                 const parsedCookie = JSON.parse(cookieString);
                 agentOptions = { agent: ytdl.createAgent(parsedCookie) };
             } catch (e) {
-                // Fallback nếu cookie là dạng string thuần túy
                 agentOptions = {
                     requestOptions: {
-                        headers: { 'Cookie': cookieString }
+                        headers: { 
+                            'Cookie': cookieString,
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                        }
                     }
                 };
             }
         }
 
-        // 1. Lấy thông tin metadata của video bằng Agent đã gắn Cookie bypass
+        // 1. Phân tích video để bóc tách luồng dữ liệu âm thanh
         const info = await ytdl.getInfo(url, agentOptions);
 
-        // 2. Lọc định dạng Audio chuẩn nhất
+        // 2. Ép bộ lọc lấy luồng âm thanh có dung lượng thấp để tối ưu hóa tốc độ tải file của Delta X
         const format = ytdl.chooseFormat(info.formats, { 
             filter: 'audioonly', 
-            quality: 'highestaudio' 
+            quality: 'lowestaudio' 
         });
 
-        if (!format || !format.url) {
-            return res.status(404).send("Lỗi: Không bóc tách được luồng âm thanh.");
+        if (!format) {
+            return res.status(404).send("Khong tim thay luong am thanh.");
         }
 
-        // 3. PRO MOVE: Redirect (Chuyển hướng) thẳng Delta X / Trình duyệt sang máy chủ Google CDN.
-        // Bỏ qua hoàn toàn bước Stream qua Vercel giúp giải quyết triệt để lỗi 0:00.
+        // 3. THIẾT LẬP HEADER CHUẨN MP3 - Đánh lừa hàm request() của Roblox nhận diện làm file .mp3
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
+        res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.redirect(302, format.url);
+
+        // 4. Stream trực tiếp luồng dữ liệu thô về Roblox qua cơ chế Pipe
+        const stream = ytdl(url, {
+            format: format,
+            highWaterMark: 1 << 25, // Tạo bộ đệm 32MB chống đứt kết nối giữa chừng khi ghi file
+            ...agentOptions
+        });
+
+        stream.on('error', (err) => {
+            console.error("Stream Error:", err);
+            if (!res.headersSent) {
+                res.status(500).send("Loi Stream: " + err.message);
+            }
+        });
+
+        stream.pipe(res);
 
     } catch (error) {
-        console.error("Lỗi hệ thống:", error.message);
-        res.status(500).send("Lỗi API Vercel: " + error.message);
+        console.error("System Error:", error.message);
+        if (!res.headersSent) {
+            res.status(500).send("Loi API Vercel: " + error.message);
+        }
     }
 };
