@@ -1,43 +1,55 @@
 const ytdl = require('@distube/ytdl-core');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
-// ====== HÀM TẠO AGENT VỚI PROXY (NẾU CÓ) ======
-function buildAgent(cookieJson, proxyUri = null) {
-    // Nếu có proxy, tạo agent với proxy
-    if (proxyUri) {
-        const proxyAgent = new HttpsProxyAgent(proxyUri);
-        return ytdl.createAgent(cookieJson, { agent: proxyAgent });
-    }
-    // Không proxy, dùng agent mặc định từ cookie
-    return ytdl.createAgent(cookieJson);
+// Hàm chuyển object cookie thành chuỗi header Cookie
+function buildCookieString(cookieObj) {
+    return Object.entries(cookieObj)
+        .map(([key, value]) => `${key}=${value}`)
+        .join('; ');
 }
 
-// ====== HÀM XỬ LÝ CHÍNH ======
 module.exports = async (req, res) => {
-    // 1. Lấy URL từ query
+    // 1. Lấy URL
     const { url } = req.query;
     if (!url) {
         return res.status(400).json({ error: 'Thiếu tham số ?url=' });
     }
 
-    // 2. Lấy cookie và proxy từ biến môi trường
+    // 2. Lấy cookie và proxy từ env
     const cookieRaw = process.env.YOUTUBE_COOKIE;
-    const proxyUri = process.env.YOUTUBE_PROXY || null; // Ví dụ: http://user:pass@proxy.com:8080
+    const proxyUri = process.env.YOUTUBE_PROXY || null;
 
-    // 3. Kiểm tra cookie
     if (!cookieRaw) {
         return res.status(401).json({ error: 'Thiếu YOUTUBE_COOKIE trong biến môi trường' });
     }
 
-    let cookieJson;
+    let cookieObj;
     try {
-        cookieJson = JSON.parse(cookieRaw);
+        cookieObj = JSON.parse(cookieRaw);
     } catch (e) {
         return res.status(400).json({ error: 'Cookie không đúng định dạng JSON' });
     }
 
+    // 3. Xây dựng cookie string
+    const cookieString = buildCookieString(cookieObj);
+
     try {
-        // 4. Thử nhiều tổ hợp playerClients để tăng khả năng thành công
+        // 4. Tạo agent proxy (nếu có)
+        let agent = null;
+        if (proxyUri) {
+            agent = new HttpsProxyAgent(proxyUri);
+        }
+
+        // 5. Tùy chọn request (gửi kèm cookie header)
+        const requestOptions = {
+            headers: {
+                Cookie: cookieString,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 30000
+        };
+
+        // 6. Thử nhiều tổ hợp playerClients
         const clientsList = [
             ['TV', 'IOS'],
             ['WEB', 'IOS'],
@@ -49,16 +61,13 @@ module.exports = async (req, res) => {
         let info = null;
         let lastError = null;
 
-        // Lần lượt thử từng tổ hợp
         for (const clients of clientsList) {
             try {
-                const agent = buildAgent(cookieJson, proxyUri);
                 info = await ytdl.getInfo(url, {
                     agent,
                     playerClients: clients,
-                    requestOptions: { timeout: 30000 } // 30 giây timeout
+                    requestOptions
                 });
-                // Nếu có formats thì thoát vòng lặp
                 if (info && info.formats && info.formats.length > 0) {
                     break;
                 }
@@ -68,19 +77,19 @@ module.exports = async (req, res) => {
             }
         }
 
-        // Nếu vẫn không có info, thử không dùng agent (chỉ cookie header)
+        // Fallback: thử không dùng playerClients
         if (!info || !info.formats || info.formats.length === 0) {
             try {
                 info = await ytdl.getInfo(url, {
-                    requestOptions: { timeout: 30000 }
+                    agent,
+                    requestOptions
                 });
             } catch (e) {
                 lastError = e;
-                console.warn('Thử không agent thất bại:', e.message);
+                console.warn('Thử không playerClients thất bại:', e.message);
             }
         }
 
-        // Nếu vẫn không có format -> báo lỗi
         if (!info || !info.formats || info.formats.length === 0) {
             return res.status(404).json({
                 error: 'Không thể lấy định dạng audio từ YouTube',
@@ -88,17 +97,11 @@ module.exports = async (req, res) => {
             });
         }
 
-        // 5. Chọn format audio tốt nhất
-        // Ưu tiên: có audio, không video, có bitrate
+        // 7. Chọn format audio tốt nhất
         let format = info.formats.find(f => f.hasAudio && !f.hasVideo && f.audioBitrate);
+        if (!format) format = info.formats.find(f => f.hasAudio && !f.hasVideo);
+        if (!format) format = info.formats.find(f => f.hasAudio);
         if (!format) {
-            format = info.formats.find(f => f.hasAudio && !f.hasVideo);
-        }
-        if (!format) {
-            format = info.formats.find(f => f.hasAudio);
-        }
-        if (!format) {
-            // Fallback: chọn chất lượng thấp nhất có audio
             format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowest' });
         }
 
@@ -106,16 +109,15 @@ module.exports = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy URL phát audio' });
         }
 
-        // 6. Thiết lập header trả về file MP3
+        // 8. Trả về stream MP3
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Content-Disposition', 'inline; filename="audio.mp3"');
         res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Access-Control-Allow-Origin', '*'); // Cho phép CORS
+        res.setHeader('Access-Control-Allow-Origin', '*');
 
-        // 7. Tạo stream và pipe sang response
         const stream = ytdl.downloadFromInfo(info, {
             format,
-            highWaterMark: 1 << 24, // 16MB buffer
+            highWaterMark: 1 << 24, // 16MB
         });
 
         stream.on('error', (err) => {
