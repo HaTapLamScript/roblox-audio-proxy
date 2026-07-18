@@ -1,4 +1,4 @@
-const ytdl = require('iguro-ytdl');
+const { ytmp3 } = require('iguro-ytdl');
 
 module.exports = async (req, res) => {
     const { url } = req.query;
@@ -7,17 +7,18 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // Lấy thông tin audio
-        const audioInfo = await ytdl.ytmp3(url);
+        const result = await ytmp3(url);
         
-        // Kiểm tra xem có link không
-        if (!audioInfo || !audioInfo.download_url) {
-            return res.status(404).json({ error: 'Không tìm thấy audio' });
+        // Kiểm tra kết quả trả về
+        if (!result.status || !result.result?.url) {
+            return res.status(404).json({ 
+                error: 'Không tìm thấy audio',
+                detail: result.error || 'Không có link tải'
+            });
         }
 
         // Redirect sang link tải thực tế
-        // Hoặc bạn có thể fetch link đó và stream về
-        return res.redirect(302, audioInfo.download_url);
+        return res.redirect(302, result.result.url);
         
     } catch (error) {
         console.error('Lỗi:', error);
