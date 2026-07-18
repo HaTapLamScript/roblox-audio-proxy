@@ -10,58 +10,66 @@ module.exports = async (req, res) => {
     try {
         const cookieString = process.env.YOUTUBE_COOKIE;
         
-        // CẤU HÌNH ĐẶC TRỊ: Sử dụng luồng WEB_EMBEDDED hoặc ANDROID_VR để lấy format ẩn
+        // CẤU HÌNH ĐẶC TRỊ: Buộc thư viện sử dụng Client ổn định nhất hiện tại
         let agentOptions = {
-            playerClients: ['WEB_EMBEDDED', 'ANDROID']
+            playerClients: ['TV', 'WEB'] 
         };
         
+        // Khởi tạo Agent xử lý Cookie an toàn
         if (cookieString) {
             try {
                 const parsedCookie = JSON.parse(cookieString);
                 agentOptions.agent = ytdl.createAgent(parsedCookie);
+                console.log("Cookie JSON applied.");
             } catch (e) {
+                // Nếu cookie dạng chuỗi thô
+                agentOptions.agent = ytdl.createAgent();
                 agentOptions.requestOptions = {
-                    headers: { 
-                        'Cookie': cookieString,
-                        'User-Agent': 'Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0'
-                    }
+                    headers: { 'Cookie': cookieString }
                 };
             }
         }
 
-        // 1. Lấy thông tin video bao gồm tất cả format ẩn
+        // 1. Lấy siêu dữ liệu (metadata) của video
         const info = await ytdl.getInfo(url, agentOptions);
 
-        // 2. Thuật toán chọn format tối ưu và an toàn nhất
-        // Tìm luồng chỉ có tiếng trước, nếu không có thì lấy bất cứ luồng nào có chứa tiếng
+        if (!info || !info.formats || info.formats.length === 0) {
+            throw new Error("Không lấy được danh sách formats từ YouTube.");
+        }
+
+        // 2. Thuật toán nhặt luồng thông minh, không phụ thuộc vào bộ lọc filter chuẩn
+        // Ưu tiên 1: Lấy luồng chỉ chứa âm thanh (M4A / WebM Audio)
         let format = info.formats.find(f => f.hasAudio && !f.hasVideo);
+        
+        // Ưu tiên 2: Nếu không thấy, lấy bất cứ luồng nào phát được ra tiếng (bao gồm cả luồng video+audio thấp)
         if (!format) {
             format = info.formats.find(f => f.hasAudio);
         }
 
+        // Ưu tiên 3: Dự phòng khẩn cấp bằng hàm nén định dạng thấp nhất
         if (!format) {
-            // Dự phòng cuối cùng: Ép chọn định dạng âm thanh bất kỳ
-            format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowestaudio' });
+            format = ytdl.chooseFormat(info.formats, { quality: 'lowest' });
         }
 
+        // Nếu duyệt hết sạch danh sách mà YouTube chặn đường link truyền dữ liệu trực tiếp
         if (!format || !format.url) {
-            return res.status(404).send("Loi API Vercel: YouTube chan luong kem tu IP nay. Vui long kiem tra lai YOUTUBE_COOKIE.");
+            return res.status(404).send("Loi API Vercel: YouTube tu choi cung cap format phat lai cho IP nay.");
         }
 
-        // 3. Cấu hình Header cho file MP3 ảo
+        // 3. Thiết lập Header chuẩn để streaming trực tiếp về Roblox
         res.setHeader('Content-Type', 'audio/mpeg');
-        res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
-        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Disposition', 'inline; filename="audio.mp3"');
         res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
 
-        // 4. Stream trực tiếp dữ liệu âm thanh về thiết bị
+        // 4. Khởi chạy luồng đọc dữ liệu từ YouTube và trả về trình duyệt
         ytdl(url, {
             format: format,
-            highWaterMark: 1 << 25, 
+            highWaterMark: 1 << 23, // 8MB buffer tối ưu tốc độ đọc của Vercel
             ...agentOptions
         })
         .on('error', (err) => {
-            console.error("Stream Error:", err);
+            console.error("Stream error:", err.message);
             if (!res.headersSent) {
                 res.status(500).send("Loi Stream: " + err.message);
             }
@@ -69,7 +77,7 @@ module.exports = async (req, res) => {
         .pipe(res);
 
     } catch (error) {
-        console.error("System Error:", error.message);
+        console.error("Lỗi hệ thống:", error.message);
         if (!res.headersSent) {
             res.status(500).send("Loi API Vercel: " + error.message);
         }
