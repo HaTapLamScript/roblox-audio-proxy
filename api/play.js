@@ -1,33 +1,52 @@
 const ytdl = require('@distube/ytdl-core');
 
 module.exports = async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    const { url } = req.query;
 
-    const videoUrl = req.query.url;
-    if (!videoUrl) return res.status(400).send('Thieu URL Video!');
-
-    let cookies = [];
-    if (process.env.YOUTUBE_COOKIE) {
-        try {
-            cookies = JSON.parse(process.env.YOUTUBE_COOKIE);
-        } catch (e) {
-            console.error("Loi cau hinh Cookie JSON:", e.message);
-        }
+    if (!url) {
+        return res.status(400).send("Thiếu tham số ?url=");
     }
 
     try {
-        const agent = ytdl.createAgent(cookies.length > 0 ? cookies : []);
-        const info = await ytdl.getInfo(videoUrl, { agent });
-        const format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'highestaudio' });
+        // Kiểm tra xem cookie cấu hình có tồn tại không
+        const cookieString = process.env.YOUTUBE_COOKIE;
+        let agentOptions = {};
 
-        if (format && format.url) {
-            res.redirect(format.url);
-        } else {
-            res.status(404).send('Khong tim thay luong am thanh phu hop.');
+        if (cookieString) {
+            // Khởi tạo cookie agent từ chuỗi JSON đã lưu trong Env
+            agentOptions = {
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Cookie': cookieString
+                    }
+                }
+            };
         }
-    } catch (err) {
-        res.status(500).send('Loi API Vercel: ' + err.message);
+
+        // Thiết lập Header phản hồi dạng luồng âm thanh cho Roblox nhận diện
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Transfer-Encoding', 'chunked');
+
+        // Ép lấy luồng audioonly với chất lượng mượt nhất cho script Executor
+        ytdl(url, {
+            filter: 'audioonly',
+            quality: 'highestaudio',
+            highWaterMark: 1 << 25, // Tăng bộ nhớ đệm chống nghẽn stream
+            ...agentOptions
+        })
+        .on('error', (err) => {
+            console.error(err);
+            if (!res.headersSent) {
+                res.status(500).send("Loi API Vercel: " + err.message);
+            }
+        })
+        .pipe(res); // Đẩy luồng trực tiếp về phía Roblox
+
+    } catch (error) {
+        console.error(error);
+        if (!res.headersSent) {
+            res.status(500).send("Loi he thong: " + error.message);
+        }
     }
 };
-
