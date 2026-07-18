@@ -3,15 +3,23 @@ const ytdl = require('@distube/ytdl-core');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Khởi tạo agent sử dụng cookie để vượt qua lỗi 429
-const agent = ytdl.createAgent(process.env.YOUTUBE_COOKIE ? [{ cookie: process.env.YOUTUBE_COOKIE }] : []);
+// Giải mã chuỗi JSON Cookie từ biến môi trường
+let cookies = [];
+if (process.env.YOUTUBE_COOKIE) {
+    try {
+        cookies = JSON.parse(process.env.YOUTUBE_COOKIE);
+    } catch (e) {
+        console.error("Loi cau hinh Cookie JSON:", e.message);
+    }
+}
+
+const agent = ytdl.createAgent(cookies.length > 0 ? cookies : []);
 
 app.get('/play', async (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) return res.status(400).send('Thieu URL Video!');
     
     try {
-        // Truyền agent đã có cookie vào hàm getInfo để xác thực với YouTube
         const info = await ytdl.getInfo(videoUrl, { agent });
         const format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'highestaudio' });
         
