@@ -4,16 +4,14 @@ module.exports = async (req, res) => {
     const { url } = req.query;
 
     if (!url) {
-        return res.status(400).send("Thiếu tham số ?url=");
+        return res.status(400).send("Thieu tham so ?url=");
     }
 
     try {
-        // Kiểm tra xem cookie cấu hình có tồn tại không
         const cookieString = process.env.YOUTUBE_COOKIE;
         let agentOptions = {};
 
         if (cookieString) {
-            // Khởi tạo cookie agent từ chuỗi JSON đã lưu trong Env
             agentOptions = {
                 requestOptions: {
                     headers: {
@@ -24,27 +22,40 @@ module.exports = async (req, res) => {
             };
         }
 
-        // Thiết lập Header phản hồi dạng luồng âm thanh cho Roblox nhận diện
-        res.setHeader('Content-Type', 'audio/mpeg');
-        res.setHeader('Transfer-Encoding', 'chunked');
+        // 1. Lấy thông tin video trước để bóc tách luồng audio chuẩn nhất
+        const info = await ytdl.getInfo(url, agentOptions);
+        
+        // 2. Lọc ra luồng chỉ có âm thanh (audioonly) với dung lượng/định dạng tối ưu nhất
+        const format = ytdl.chooseFormat(info.formats, { 
+            filter: 'audioonly', 
+            quality: 'highestaudio' 
+        });
 
-        // Ép lấy luồng audioonly với chất lượng mượt nhất cho script Executor
+        if (!format) {
+            return res.status(400).send("Loi API Vercel: Khong tim thay luong Audio phu hop.");
+        }
+
+        // 3. Thiết lập Header động dựa trên kiểu file gốc của YouTube (thường là audio/webm hoặc audio/mp4)
+        res.setHeader('Content-Type', format.mimeType || 'audio/webm');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Access-Control-Allow-Origin', '*'); // Cho phép Roblox truy cập xuyên nền tảng
+
+        // 4. Tiến hành stream luồng âm thanh về thiết bị
         ytdl(url, {
-            filter: 'audioonly',
-            quality: 'highestaudio',
-            highWaterMark: 1 << 25, // Tăng bộ nhớ đệm chống nghẽn stream
+            format: format,
+            highWaterMark: 1 << 25, // Tăng buffer lên 32MB chống nghẽn mạng di động
             ...agentOptions
         })
         .on('error', (err) => {
-            console.error(err);
+            console.error("Stream Error:", err);
             if (!res.headersSent) {
-                res.status(500).send("Loi API Vercel: " + err.message);
+                res.status(500).send("Loi Stream Vercel: " + err.message);
             }
         })
-        .pipe(res); // Đẩy luồng trực tiếp về phía Roblox
+        .pipe(res);
 
     } catch (error) {
-        console.error(error);
+        console.error("Catch Error:", error);
         if (!res.headersSent) {
             res.status(500).send("Loi he thong: " + error.message);
         }
