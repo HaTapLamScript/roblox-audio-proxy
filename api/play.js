@@ -10,66 +10,59 @@ module.exports = async (req, res) => {
     try {
         const cookieString = process.env.YOUTUBE_COOKIE;
         
-        // CẤU HÌNH ĐẶC TRỊ: Buộc thư viện sử dụng Client ổn định nhất hiện tại
-        let agentOptions = {
-            playerClients: ['TV', 'WEB'] 
-        };
-        
-        // Khởi tạo Agent xử lý Cookie an toàn
-        if (cookieString) {
-            try {
-                const parsedCookie = JSON.parse(cookieString);
-                agentOptions.agent = ytdl.createAgent(parsedCookie);
-                console.log("Cookie JSON applied.");
-            } catch (e) {
-                // Nếu cookie dạng chuỗi thô
-                agentOptions.agent = ytdl.createAgent();
-                agentOptions.requestOptions = {
-                    headers: { 'Cookie': cookieString }
-                };
-            }
+        if (!cookieString) {
+            return res.status(401).send("Loi API Vercel: Thieu YOUTUBE_COOKIE. YouTube chan IP bot neu khong co Cookie xac thuc.");
         }
 
-        // 1. Lấy siêu dữ liệu (metadata) của video
+        // 1. TẠO AGENT SỬ DỤNG COOKIE CHUẨN JSON
+        let parsedCookie;
+        try {
+            parsedCookie = JSON.parse(cookieString);
+        } catch (e) {
+            return res.status(400).send("Loi API: YOUTUBE_COOKIE tren Vercel khong phai dang JSON hop le.");
+        }
+
+        // 2. ÉP CLIENT TV/IOS ĐỂ BYPASS BOT DETECTION
+        const agent = ytdl.createAgent(parsedCookie);
+        const agentOptions = {
+            agent,
+            playerClients: ['TV', 'IOS']
+        };
+
+        // 3. LẤY THÔNG TIN TRÍCH XUẤT TỪ YOUTUBE
         const info = await ytdl.getInfo(url, agentOptions);
 
         if (!info || !info.formats || info.formats.length === 0) {
-            throw new Error("Không lấy được danh sách formats từ YouTube.");
+            return res.status(404).send("Loi API Vercel: Khong tim thay format hop le (YouTube blocked format grid).");
         }
 
-        // 2. Thuật toán nhặt luồng thông minh, không phụ thuộc vào bộ lọc filter chuẩn
-        // Ưu tiên 1: Lấy luồng chỉ chứa âm thanh (M4A / WebM Audio)
-        let format = info.formats.find(f => f.hasAudio && !f.hasVideo);
-        
-        // Ưu tiên 2: Nếu không thấy, lấy bất cứ luồng nào phát được ra tiếng (bao gồm cả luồng video+audio thấp)
+        // 4. THUẬT TOÁN LỌC LUỒNG AUDIO TỐI ƯU CHO ROBLOX
+        let format = info.formats.find(f => f.hasAudio && !f.hasVideo); // Ưu tiên m4a/webm audio-only
         if (!format) {
-            format = info.formats.find(f => f.hasAudio);
+            format = info.formats.find(f => f.hasAudio); // Fallback: Lấy luồng bất kỳ có tiếng
         }
-
-        // Ưu tiên 3: Dự phòng khẩn cấp bằng hàm nén định dạng thấp nhất
         if (!format) {
-            format = ytdl.chooseFormat(info.formats, { quality: 'lowest' });
+            format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowestaudio' }); // Fallback ép chất lượng thấp nhất
         }
 
-        // Nếu duyệt hết sạch danh sách mà YouTube chặn đường link truyền dữ liệu trực tiếp
         if (!format || !format.url) {
-            return res.status(404).send("Loi API Vercel: YouTube tu choi cung cap format phat lai cho IP nay.");
+            return res.status(404).send("Loi API Vercel: Khong the giai ma link phat (.url bi an).");
         }
 
-        // 3. Thiết lập Header chuẩn để streaming trực tiếp về Roblox
+        // 5. THIẾT LẬP HEADER CHUẨN TRẢ VỀ FILE MP3 (audio/mpeg)
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Content-Disposition', 'inline; filename="audio.mp3"');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Access-Control-Allow-Origin', '*'); // Tránh lỗi CORS nếu gọi từ client ngoài
 
-        // 4. Khởi chạy luồng đọc dữ liệu từ YouTube và trả về trình duyệt
-        ytdl(url, {
+        // 6. TRUYỀN LUỒNG DỮ LIỆU QUA BỘ ĐỆM VERCEL VỀ LUA SCRIPT
+        ytdl.downloadFromInfo(info, {
             format: format,
-            highWaterMark: 1 << 23, // 8MB buffer tối ưu tốc độ đọc của Vercel
+            highWaterMark: 1 << 24, // Mở rộng bộ nhớ đệm lên 16MB giúp ổn định stream
             ...agentOptions
         })
         .on('error', (err) => {
-            console.error("Stream error:", err.message);
+            console.error("Streaming Error:", err.message);
             if (!res.headersSent) {
                 res.status(500).send("Loi Stream: " + err.message);
             }
@@ -77,7 +70,7 @@ module.exports = async (req, res) => {
         .pipe(res);
 
     } catch (error) {
-        console.error("Lỗi hệ thống:", error.message);
+        console.error("System Core Error:", error.message);
         if (!res.headersSent) {
             res.status(500).send("Loi API Vercel: " + error.message);
         }
