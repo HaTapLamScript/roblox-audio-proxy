@@ -1,63 +1,95 @@
 const ytdl = require('@distube/ytdl-core');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
-// ====== CẤU HÌNH ======
-// Lấy proxy URI từ biến môi trường (nếu có)
-// Ví dụ: http://user:pass@proxy-provider.com:8080
-const PROXY_URI = process.env.YOUTUBE_PROXY || null;
-
-// Tạo agent nếu có proxy
-function createAgentWithProxy(cookieJson) {
-    let agent = ytdl.createAgent(cookieJson);
-    if (PROXY_URI) {
-        // ytdl-core hỗ trợ proxy qua `agent` tùy chỉnh
-        // Nhưng @distube/ytdl-core không có sẵn proxyAgent, ta cần dùng `axios` hoặc `https-proxy-agent`
-        // Ta sẽ dùng `https-proxy-agent` để tạo agent cho ytdl
-        const { HttpsProxyAgent } = require('https-proxy-agent');
-        const proxyAgent = new HttpsProxyAgent(PROXY_URI);
-        agent = ytdl.createAgent(cookieJson, { agent: proxyAgent });
+// ====== HÀM TẠO AGENT VỚI PROXY (NẾU CÓ) ======
+function buildAgent(cookieJson, proxyUri = null) {
+    // Nếu có proxy, tạo agent với proxy
+    if (proxyUri) {
+        const proxyAgent = new HttpsProxyAgent(proxyUri);
+        return ytdl.createAgent(cookieJson, { agent: proxyAgent });
     }
-    return agent;
+    // Không proxy, dùng agent mặc định từ cookie
+    return ytdl.createAgent(cookieJson);
 }
 
 // ====== HÀM XỬ LÝ CHÍNH ======
 module.exports = async (req, res) => {
-    // 1. Lấy URL
+    // 1. Lấy URL từ query
     const { url } = req.query;
     if (!url) {
         return res.status(400).json({ error: 'Thiếu tham số ?url=' });
     }
 
-    // 2. Kiểm tra cookie
-    const cookieString = process.env.YOUTUBE_COOKIE;
-    if (!cookieString) {
-        return res.status(401).json({ error: 'Thiếu YOUTUBE_COOKIE trong env' });
+    // 2. Lấy cookie và proxy từ biến môi trường
+    const cookieRaw = process.env.YOUTUBE_COOKIE;
+    const proxyUri = process.env.YOUTUBE_PROXY || null; // Ví dụ: http://user:pass@proxy.com:8080
+
+    // 3. Kiểm tra cookie
+    if (!cookieRaw) {
+        return res.status(401).json({ error: 'Thiếu YOUTUBE_COOKIE trong biến môi trường' });
     }
 
     let cookieJson;
     try {
-        cookieJson = JSON.parse(cookieString);
-    } catch {
-        return res.status(400).json({ error: 'YOUTUBE_COOKIE không đúng định dạng JSON' });
+        cookieJson = JSON.parse(cookieRaw);
+    } catch (e) {
+        return res.status(400).json({ error: 'Cookie không đúng định dạng JSON' });
     }
 
     try {
-        // 3. Tạo agent (có proxy nếu có)
-        const agent = createAgentWithProxy(cookieJson);
+        // 4. Thử nhiều tổ hợp playerClients để tăng khả năng thành công
+        const clientsList = [
+            ['TV', 'IOS'],
+            ['WEB', 'IOS'],
+            ['WEB_EMBEDDED', 'TV'],
+            ['IOS', 'WEB'],
+            ['TV', 'WEB_EMBEDDED']
+        ];
 
-        // 4. Ép client để bypass bot
-        const agentOptions = {
-            agent,
-            playerClients: ['TV', 'IOS', 'WEB_EMBEDDED'],
-            // Tăng timeout
-            requestOptions: {
-                timeout: 30000,
+        let info = null;
+        let lastError = null;
+
+        // Lần lượt thử từng tổ hợp
+        for (const clients of clientsList) {
+            try {
+                const agent = buildAgent(cookieJson, proxyUri);
+                info = await ytdl.getInfo(url, {
+                    agent,
+                    playerClients: clients,
+                    requestOptions: { timeout: 30000 } // 30 giây timeout
+                });
+                // Nếu có formats thì thoát vòng lặp
+                if (info && info.formats && info.formats.length > 0) {
+                    break;
+                }
+            } catch (e) {
+                lastError = e;
+                console.warn(`Thử với clients [${clients.join(', ')}] thất bại:`, e.message);
             }
-        };
+        }
 
-        // 5. Lấy thông tin video
-        const info = await ytdl.getInfo(url, agentOptions);
+        // Nếu vẫn không có info, thử không dùng agent (chỉ cookie header)
+        if (!info || !info.formats || info.formats.length === 0) {
+            try {
+                info = await ytdl.getInfo(url, {
+                    requestOptions: { timeout: 30000 }
+                });
+            } catch (e) {
+                lastError = e;
+                console.warn('Thử không agent thất bại:', e.message);
+            }
+        }
 
-        // 6. Lọc format audio tốt nhất
+        // Nếu vẫn không có format -> báo lỗi
+        if (!info || !info.formats || info.formats.length === 0) {
+            return res.status(404).json({
+                error: 'Không thể lấy định dạng audio từ YouTube',
+                detail: lastError ? lastError.message : 'Không có format nào'
+            });
+        }
+
+        // 5. Chọn format audio tốt nhất
+        // Ưu tiên: có audio, không video, có bitrate
         let format = info.formats.find(f => f.hasAudio && !f.hasVideo && f.audioBitrate);
         if (!format) {
             format = info.formats.find(f => f.hasAudio && !f.hasVideo);
@@ -66,25 +98,24 @@ module.exports = async (req, res) => {
             format = info.formats.find(f => f.hasAudio);
         }
         if (!format) {
-            // Fallback cuối
+            // Fallback: chọn chất lượng thấp nhất có audio
             format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowest' });
         }
 
         if (!format || !format.url) {
-            return res.status(404).json({ error: 'Không tìm thấy format audio hợp lệ' });
+            return res.status(404).json({ error: 'Không tìm thấy URL phát audio' });
         }
 
-        // 7. Thiết lập header
+        // 6. Thiết lập header trả về file MP3
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Content-Disposition', 'inline; filename="audio.mp3"');
         res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Origin', '*'); // Cho phép CORS
 
-        // 8. Stream audio
+        // 7. Tạo stream và pipe sang response
         const stream = ytdl.downloadFromInfo(info, {
-            format: format,
-            highWaterMark: 1 << 24, // 16MB
-            ...agentOptions
+            format,
+            highWaterMark: 1 << 24, // 16MB buffer
         });
 
         stream.on('error', (err) => {
@@ -97,7 +128,7 @@ module.exports = async (req, res) => {
         stream.pipe(res);
 
     } catch (error) {
-        console.error('Lỗi hệ thống:', error);
+        console.error('Lỗi toàn cục:', error);
         if (!res.headersSent) {
             res.status(500).json({ error: 'Lỗi xử lý: ' + error.message });
         }
