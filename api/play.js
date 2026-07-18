@@ -9,9 +9,10 @@ module.exports = async (req, res) => {
 
     try {
         const cookieString = process.env.YOUTUBE_COOKIE;
+        
+        // CẤU HÌNH ĐẶC TRỊ: Sử dụng luồng WEB_EMBEDDED hoặc ANDROID_VR để lấy format ẩn
         let agentOptions = {
-            // PRO CONFIG: Ép ép các luồng Client ít bị quét bot nhất (TV và IOS)
-            playerClients: ['TV', 'IOS']
+            playerClients: ['WEB_EMBEDDED', 'ANDROID']
         };
         
         if (cookieString) {
@@ -22,32 +23,38 @@ module.exports = async (req, res) => {
                 agentOptions.requestOptions = {
                     headers: { 
                         'Cookie': cookieString,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                        'User-Agent': 'Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0'
                     }
                 };
             }
         }
 
-        // 1. Phân tích luồng dựa trên cấu hình client an toàn
+        // 1. Lấy thông tin video bao gồm tất cả format ẩn
         const info = await ytdl.getInfo(url, agentOptions);
 
-        // 2. Chọn định dạng chỉ có âm thanh (audioonly)
-        const format = ytdl.chooseFormat(info.formats, { 
-            filter: 'audioonly', 
-            quality: 'lowestaudio' 
-        });
-
+        // 2. Thuật toán chọn format tối ưu và an toàn nhất
+        // Tìm luồng chỉ có tiếng trước, nếu không có thì lấy bất cứ luồng nào có chứa tiếng
+        let format = info.formats.find(f => f.hasAudio && !f.hasVideo);
         if (!format) {
-            return res.status(404).send("Khong tim thay luong am thanh.");
+            format = info.formats.find(f => f.hasAudio);
         }
 
-        // 3. Header bắt buộc để trình duyệt và hàm request() của game hiểu đây là file MP3
+        if (!format) {
+            // Dự phòng cuối cùng: Ép chọn định dạng âm thanh bất kỳ
+            format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowestaudio' });
+        }
+
+        if (!format || !format.url) {
+            return res.status(404).send("Loi API Vercel: YouTube chan luong kem tu IP nay. Vui long kiem tra lai YOUTUBE_COOKIE.");
+        }
+
+        // 3. Cấu hình Header cho file MP3 ảo
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Access-Control-Allow-Origin', '*');
 
-        // 4. Tiến hành stream về thiết bị
+        // 4. Stream trực tiếp dữ liệu âm thanh về thiết bị
         ytdl(url, {
             format: format,
             highWaterMark: 1 << 25, 
