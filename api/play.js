@@ -1,145 +1,93 @@
 const ytdl = require('@distube/ytdl-core');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
-// Hàm chuyển object cookie thành mảng cookie cho ytdl
-function convertCookieToArray(cookieObj) {
-    return Object.entries(cookieObj).map(([name, value]) => ({
-        name,
-        value,
-        domain: '.youtube.com',
-        path: '/',
-        secure: true,
-        httpOnly: false,
-    }));
+// Chuyển cookie object thành header string
+function buildCookieHeader(cookieObj) {
+    return Object.entries(cookieObj)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
 }
 
-// Hàm lấy danh sách proxy
+// Lấy danh sách proxy (ưu tiên mảng)
 function getProxyList() {
-    const proxyListEnv = process.env.YOUTUBE_PROXIES;
-    if (proxyListEnv) {
+    const proxies = process.env.YOUTUBE_PROXIES;
+    if (proxies) {
         try {
-            const list = JSON.parse(proxyListEnv);
-            if (Array.isArray(list) && list.length > 0) {
-                return list;
-            }
-        } catch (e) {
-            console.warn('YOUTUBE_PROXIES không phải JSON hợp lệ');
-        }
+            const list = JSON.parse(proxies);
+            if (Array.isArray(list) && list.length) return list;
+        } catch {}
     }
-    const singleProxy = process.env.YOUTUBE_PROXY;
-    if (singleProxy) {
-        return [singleProxy];
-    }
+    const single = process.env.YOUTUBE_PROXY;
+    if (single) return [single];
     return [];
 }
 
-// Hàm kiểm tra URL YouTube
-function isValidYouTubeUrl(url) {
-    const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
-    return pattern.test(url);
+// Kiểm tra URL YouTube
+function isValidYoutubeUrl(url) {
+    return /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//.test(url);
 }
 
 module.exports = async (req, res) => {
-    // 1. Lấy URL và kiểm tra
+    // 1. Lấy URL
     let { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'Thiếu tham số ?url=' });
-    }
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        url = 'https://' + url;
-    }
-    if (!isValidYouTubeUrl(url)) {
-        return res.status(400).json({ error: 'URL YouTube không hợp lệ' });
+    if (!url) return res.status(400).json({ error: 'Missing ?url=' });
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    if (!isValidYoutubeUrl(url)) {
+        return res.status(400).json({ error: 'Invalid YouTube URL' });
     }
 
     // 2. Cookie
     const cookieRaw = process.env.YOUTUBE_COOKIE;
-    if (!cookieRaw) {
-        return res.status(401).json({ error: 'Thiếu YOUTUBE_COOKIE' });
-    }
+    if (!cookieRaw) return res.status(401).json({ error: 'Missing YOUTUBE_COOKIE' });
     let cookieObj;
-    try {
-        cookieObj = JSON.parse(cookieRaw);
-    } catch (e) {
-        return res.status(400).json({ error: 'Cookie sai định dạng JSON' });
+    try { cookieObj = JSON.parse(cookieRaw); } catch {
+        return res.status(400).json({ error: 'Invalid YOUTUBE_COOKIE JSON' });
     }
-    const cookieArray = convertCookieToArray(cookieObj);
+    const cookieHeader = buildCookieHeader(cookieObj);
 
-    // 3. Proxy list
+    // 3. Proxy
     const proxies = getProxyList();
-    if (proxies.length === 0) {
-        return res.status(401).json({ error: 'Thiếu YOUTUBE_PROXY hoặc YOUTUBE_PROXIES' });
+    if (!proxies.length) {
+        return res.status(401).json({ error: 'Missing YOUTUBE_PROXY or YOUTUBE_PROXIES' });
     }
 
+    // 4. Thử tối đa 3 proxy đầu tiên (để tiết kiệm thời gian)
+    const maxProxies = Math.min(proxies.length, 3);
     let lastError = null;
 
-    // 4. Thử từng proxy
-    for (let i = 0; i < proxies.length; i++) {
+    for (let i = 0; i < maxProxies; i++) {
         const proxyUri = proxies[i];
-        console.log(`[Proxy ${i+1}/${proxies.length}] Đang thử...`);
+        console.log(`[Proxy ${i+1}] Trying...`);
 
         try {
-            // Tạo agent với proxy và cookie bằng hàm chính thức
-            const agent = ytdl.createProxyAgent(
-                { uri: proxyUri },
-                cookieArray
-            );
+            const proxyAgent = new HttpsProxyAgent(proxyUri);
+            const requestOptions = {
+                agent: proxyAgent,
+                headers: {
+                    Cookie: cookieHeader,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                },
+                timeout: 15000, // 15 giây
+            };
 
-            // Các tổ hợp client để tăng khả năng thành công
-            const clientsList = [
-                ['TV', 'IOS'],
-                ['WEB_EMBEDDED', 'TV'],
-                ['IOS', 'WEB'],
-                ['WEB', 'IOS'],
-            ];
+            // Lấy info video
+            const info = await ytdl.getInfo(url, {
+                requestOptions,
+                playerClients: ['TV', 'IOS', 'WEB_EMBEDDED']
+            });
 
-            let info = null;
-
-            for (const clients of clientsList) {
-                try {
-                    info = await ytdl.getInfo(url, {
-                        agent: agent,
-                        playerClients: clients,
-                        requestOptions: {
-                            timeout: 45000
-                        }
-                    });
-                    if (info && info.formats && info.formats.length > 0) break;
-                } catch (e) {
-                    lastError = e;
-                    console.warn(`[Proxy ${i+1}] clients ${clients.join(',')} thất bại:`, e.message);
-                }
-            }
-
-            // Fallback nếu không có client nào hoạt động
-            if (!info || !info.formats || info.formats.length === 0) {
-                try {
-                    info = await ytdl.getInfo(url, {
-                        agent: agent,
-                        requestOptions: {
-                            timeout: 45000
-                        }
-                    });
-                } catch (e) {
-                    lastError = e;
-                    console.warn(`[Proxy ${i+1}] Fallback thất bại:`, e.message);
-                }
-            }
-
-            // Nếu thành công
-            if (info && info.formats && info.formats.length > 0) {
-                // Chọn format audio tốt nhất
+            if (info && info.formats && info.formats.length) {
+                // Chọn audio tốt nhất
                 let format = info.formats.find(f => f.hasAudio && !f.hasVideo && f.audioBitrate);
                 if (!format) format = info.formats.find(f => f.hasAudio && !f.hasVideo);
                 if (!format) format = info.formats.find(f => f.hasAudio);
-                if (!format) {
-                    format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowest' });
-                }
+                if (!format) format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowest' });
 
                 if (!format || !format.url) {
-                    return res.status(404).json({ error: 'Không tìm thấy URL audio' });
+                    return res.status(404).json({ error: 'No audio format found' });
                 }
 
-                // Trả về stream
+                // Stream
                 res.setHeader('Content-Type', 'audio/mpeg');
                 res.setHeader('Content-Disposition', 'inline; filename="audio.mp3"');
                 res.setHeader('Accept-Ranges', 'bytes');
@@ -148,28 +96,28 @@ module.exports = async (req, res) => {
                 const stream = ytdl.downloadFromInfo(info, {
                     format,
                     highWaterMark: 1 << 24,
-                    agent: agent,
+                    requestOptions,
                 });
 
                 stream.on('error', (err) => {
                     console.error('Stream error:', err);
                     if (!res.headersSent) {
-                        res.status(500).json({ error: 'Lỗi stream: ' + err.message });
+                        res.status(500).json({ error: 'Stream error: ' + err.message });
                     }
                 });
 
                 stream.pipe(res);
-                return;
+                return; // Thành công
             }
         } catch (e) {
             lastError = e;
-            console.warn(`[Proxy ${i+1}] Lỗi kết nối:`, e.message);
+            console.warn(`Proxy ${i+1} failed:`, e.message);
         }
     }
 
-    // Nếu tất cả proxy thất bại
-    return res.status(500).json({
-        error: 'Tất cả proxy đều thất bại',
-        detail: lastError ? lastError.message : 'Không xác định'
+    // Nếu tất cả đều thất bại
+    res.status(500).json({
+        error: 'All proxies failed',
+        detail: lastError ? lastError.message : 'Unknown error'
     });
 };
