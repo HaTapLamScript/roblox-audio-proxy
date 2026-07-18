@@ -1,7 +1,6 @@
 const ytdl = require('@distube/ytdl-core');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 
-// Hàm chuyển object cookie thành mảng cookie cho ytdl.createAgent
+// Hàm chuyển object cookie thành mảng cookie cho ytdl
 function convertCookieToArray(cookieObj) {
     return Object.entries(cookieObj).map(([name, value]) => ({
         name,
@@ -10,7 +9,6 @@ function convertCookieToArray(cookieObj) {
         path: '/',
         secure: true,
         httpOnly: false,
-        hostOnly: false
     }));
 }
 
@@ -21,7 +19,7 @@ function getProxyList() {
         try {
             const list = JSON.parse(proxyListEnv);
             if (Array.isArray(list) && list.length > 0) {
-                return list.map(p => p.startsWith('http://') ? p : `http://${p}`);
+                return list;
             }
         } catch (e) {
             console.warn('YOUTUBE_PROXIES không phải JSON hợp lệ');
@@ -29,7 +27,7 @@ function getProxyList() {
     }
     const singleProxy = process.env.YOUTUBE_PROXY;
     if (singleProxy) {
-        return [singleProxy.startsWith('http://') ? singleProxy : `http://${singleProxy}`];
+        return [singleProxy];
     }
     return [];
 }
@@ -38,16 +36,6 @@ function getProxyList() {
 function isValidYouTubeUrl(url) {
     const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
     return pattern.test(url);
-}
-
-// User-Agent ngẫu nhiên
-function getRandomUserAgent() {
-    const uas = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ];
-    return uas[Math.floor(Math.random() * uas.length)];
 }
 
 module.exports = async (req, res) => {
@@ -87,21 +75,21 @@ module.exports = async (req, res) => {
     // 4. Thử từng proxy
     for (let i = 0; i < proxies.length; i++) {
         const proxyUri = proxies[i];
-        console.log(`[Proxy ${i+1}/${proxies.length}] Thử: ${proxyUri.replace(/\/\/.*@/, '//***@')}`);
+        console.log(`[Proxy ${i+1}/${proxies.length}] Đang thử...`);
 
         try {
-            // Tạo cookie agent
-            const cookieAgent = ytdl.createAgent(cookieArray);
-            // Tạo proxy agent
-            const proxyAgent = new HttpsProxyAgent(proxyUri);
+            // Tạo agent với proxy và cookie bằng hàm chính thức
+            const agent = ytdl.createProxyAgent(
+                { uri: proxyUri },
+                cookieArray
+            );
 
-            // Các tổ hợp client
+            // Các tổ hợp client để tăng khả năng thành công
             const clientsList = [
                 ['TV', 'IOS'],
                 ['WEB_EMBEDDED', 'TV'],
                 ['IOS', 'WEB'],
                 ['WEB', 'IOS'],
-                ['TV', 'WEB_EMBEDDED']
             ];
 
             let info = null;
@@ -109,13 +97,9 @@ module.exports = async (req, res) => {
             for (const clients of clientsList) {
                 try {
                     info = await ytdl.getInfo(url, {
-                        agent: cookieAgent,               // Agent cookie
+                        agent: agent,
                         playerClients: clients,
                         requestOptions: {
-                            agent: proxyAgent,             // Proxy cho request
-                            headers: {
-                                'User-Agent': getRandomUserAgent()
-                            },
                             timeout: 45000
                         }
                     });
@@ -126,16 +110,12 @@ module.exports = async (req, res) => {
                 }
             }
 
-            // Fallback không clients
+            // Fallback nếu không có client nào hoạt động
             if (!info || !info.formats || info.formats.length === 0) {
                 try {
                     info = await ytdl.getInfo(url, {
-                        agent: cookieAgent,
+                        agent: agent,
                         requestOptions: {
-                            agent: proxyAgent,
-                            headers: {
-                                'User-Agent': getRandomUserAgent()
-                            },
                             timeout: 45000
                         }
                     });
@@ -147,13 +127,14 @@ module.exports = async (req, res) => {
 
             // Nếu thành công
             if (info && info.formats && info.formats.length > 0) {
-                // Chọn format
+                // Chọn format audio tốt nhất
                 let format = info.formats.find(f => f.hasAudio && !f.hasVideo && f.audioBitrate);
                 if (!format) format = info.formats.find(f => f.hasAudio && !f.hasVideo);
                 if (!format) format = info.formats.find(f => f.hasAudio);
                 if (!format) {
                     format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowest' });
                 }
+
                 if (!format || !format.url) {
                     return res.status(404).json({ error: 'Không tìm thấy URL audio' });
                 }
@@ -167,13 +148,7 @@ module.exports = async (req, res) => {
                 const stream = ytdl.downloadFromInfo(info, {
                     format,
                     highWaterMark: 1 << 24,
-                    agent: cookieAgent,
-                    requestOptions: {
-                        agent: proxyAgent,
-                        headers: {
-                            'User-Agent': getRandomUserAgent()
-                        }
-                    }
+                    agent: agent,
                 });
 
                 stream.on('error', (err) => {
@@ -184,7 +159,7 @@ module.exports = async (req, res) => {
                 });
 
                 stream.pipe(res);
-                return; // Thoát khi thành công
+                return;
             }
         } catch (e) {
             lastError = e;
