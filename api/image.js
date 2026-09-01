@@ -18,11 +18,20 @@ module.exports = async (req, res) => {
     const client = url.startsWith('https') ? https : http;
 
     client.get(url, (proxyRes) => {
-        res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'image/jpeg');
-        proxyRes.pipe(res);
+        let data = [];
+
+        proxyRes.on('data', (chunk) => {
+            data.push(chunk);
+        });
+
+        proxyRes.on('end', () => {
+            const buffer = Buffer.concat(data);
+            res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'image/jpeg');
+            res.setHeader('Content-Length', buffer.length);
+            res.end(buffer);
+        });
     }).on('error', (err) => {
         console.error('Lỗi Proxy Ảnh:', err);
         res.status(500).json({ error: 'Không thể tải ảnh' });
     });
 };
-
