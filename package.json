@@ -2,6 +2,6 @@
   "name": "mambo-audio-proxy",
   "version": "1.0.0",
   "dependencies": {
-    "@distube/ytdl-core": "^4.15.9"
+    "ytdl-core": "^4.11.5"
   }
-}
+} 
