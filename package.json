@@ -1,12 +1,7 @@
 {
   "name": "mambo-audio-proxy",
-  "version": "4.1.0",
-  "description": "Simple YouTube audio downloader",
-  "main": "api/play.js",
+  "version": "1.0.0",
   "dependencies": {
     "@distube/ytdl-core": "^4.15.9"
-  },
-  "engines": {
-    "node": ">=18.x"
   }
 }
