@@ -1,12 +1,7 @@
 {
-  "name": "roblox-audio-proxy",
+  "name": "roblox-youtube-api",
   "version": "1.0.0",
-  "main": "api/play.js",
   "dependencies": {
-    "express": "^4.18.2"
-  },
-  "scripts": {
-    "start": "node api/play.js"
+    "axios": "^1.6.0"
   }
-}
- 
+} 
