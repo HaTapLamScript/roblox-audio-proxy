@@ -1,112 +1,110 @@
-const https = require('https');
-const http = require('http');
+const axios = require('axios');
 
 // Cache lưu audioUrl trong 2 tiếng
 const audioCache = new Map();
 const CACHE_TTL = 2 * 60 * 60 * 1000;
 
-// Hàm trích xuất Video ID từ URL YouTube
+// Hàm trích xuất Video ID
 function extractVideoId(url) {
     const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
     return match ? match[1] : null;
 }
 
-// Hàm gửi request JSON (POST / GET)
-function requestJson(options, postData = null, timeout = 5000) {
-    return new Promise((resolve, reject) => {
-        const protocol = options.url.startsWith('https') ? https : http;
-        const req = protocol.request(options.url, {
-            method: options.method || 'GET',
-            headers: options.headers || {}
-        }, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                if (res.statusCode >= 200 && res.statusCode < 300) {
-                    try {
-                        resolve(JSON.parse(data));
-                    } catch (e) {
-                        reject(new Error('Invalid JSON response'));
-                    }
-                } else {
-                    reject(new Error(`HTTP ${res.statusCode}`));
-                }
-            });
-        });
+// Client HTTP với timeout mặc định
+const http = axios.create({
+    timeout: 4000,
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+});
 
-        req.on('error', reject);
-        req.setTimeout(timeout, () => {
-            req.destroy();
-            reject(new Error('Request Timeout'));
-        });
-
-        if (postData) {
-            req.write(JSON.stringify(postData));
-        }
-        req.end();
-    });
-}
-
-// Layer 1: Lấy audio qua Cobalt API (Mới & Rất ổn định)
-async function getAudioFromCobalt(videoUrl) {
-    const cobaltInstances = [
-        'https://api.cobalt.tools/',
-        'https://cobalt-api.kwiatek.xyz/'
+// Layer 1: Piped API (Thử 6 instance ổn định nhất)
+async function tryPiped(videoId) {
+    const instances = [
+        'https://pipedapi.kavin.rocks',
+        'https://api.piped.privacydev.net',
+        'https://pipedapi.tokhmi.xyz',
+        'https://pipedapi.moomoo.me',
+        'https://api.piped.projectsegfau.lt',
+        'https://pipedapi.in.projectsegfau.lt'
     ];
 
-    for (const instance of cobaltInstances) {
+    for (const inst of instances) {
         try {
-            const data = await requestJson({
-                url: instance,
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+            const res = await http.get(`${inst}/streams/${videoId}`);
+            if (res.data && res.data.audioStreams && res.data.audioStreams.length > 0) {
+                // Ưu tiên chọn bitrate tốt
+                res.data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+                return res.data.audioStreams[0].url;
+            }
+        } catch (e) { continue; }
+    }
+    throw new Error('Piped instances failed');
+}
+
+// Layer 2: Invidious API (Thử 5 instance mới nhất)
+async function tryInvidious(videoId) {
+    const instances = [
+        'https://invidious.nerdvpn.de',
+        'https://inv.tux.pizza',
+        'https://invidious.drgns.space',
+        'https://vid.puffyan.us',
+        'https://invidious.privacydev.net'
+    ];
+
+    for (const inst of instances) {
+        try {
+            const res = await http.get(`${inst}/api/v1/videos/${videoId}`);
+            if (res.data && res.data.adaptiveFormats) {
+                const audios = res.data.adaptiveFormats.filter(f => f.type && f.type.startsWith('audio/'));
+                if (audios.length > 0) {
+                    audios.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
+                    return audios[0].url;
                 }
-            }, {
+            }
+        } catch (e) { continue; }
+    }
+    throw new Error('Invidious instances failed');
+}
+
+// Layer 3: Cobalt API (Dịch vụ chuyển đổi mạnh)
+async function tryCobalt(videoUrl) {
+    const instances = [
+        'https://api.cobalt.tools/',
+        'https://cobalt-api.kwiatek.xyz/',
+        'https://co.wuk.sh/'
+    ];
+
+    for (const inst of instances) {
+        try {
+            const res = await http.post(inst, {
                 url: videoUrl,
                 downloadMode: 'audio',
                 audioFormat: 'mp3'
-            }, 4500);
-
-            if (data && (data.url || data.audio)) {
-                return data.url || data.audio;
+            }, {
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+            });
+            if (res.data && (res.data.url || res.data.audio)) {
+                return res.data.url || res.data.audio;
             }
-        } catch (err) {
-            continue;
-        }
+        } catch (e) { continue; }
     }
-    throw new Error('Cobalt failed');
+    throw new Error('Cobalt instances failed');
 }
 
-// Layer 2: Lấy audio qua Piped API (Dự phòng)
-async function getAudioFromPiped(videoId) {
-    const pipedInstances = [
-        'https://pipedapi.kavin.rocks',
-        'https://api.piped.privacydev.net',
-        'https://pipedapi.tokhmi.xyz'
-    ];
-
-    for (const instance of pipedInstances) {
-        try {
-            const data = await requestJson({
-                url: `${instance}/streams/${videoId}`
-            }, null, 4000);
-
-            if (data && data.audioStreams && data.audioStreams.length > 0) {
-                // Sắp xếp chọn bitrate tốt nhất
-                data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-                return data.audioStreams[0].url;
-            }
-        } catch (err) {
-            continue;
+// Layer 4: Direct Public Audio Proxy Fallback (Nguồn dự phòng 4)
+async function tryAlternativeProxy(videoId) {
+    try {
+        const res = await http.get(`https://ytdl.api.1337337.xyz/api/info?id=${videoId}`);
+        if (res.data && res.data.url) {
+            return res.data.url;
         }
-    }
-    throw new Error('Piped failed');
+    } catch (e) {}
+    throw new Error('Alternative proxy failed');
 }
 
 module.exports = async (req, res) => {
-    // CORS Header
+    // CORS Header cho Roblox và Browser
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -127,43 +125,49 @@ module.exports = async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid YouTube URL' });
     }
 
-    // Check Cache
+    // Trả về từ Cache nếu có
     const cached = audioCache.get(videoId);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-        return res.status(200).json({ 
-            success: true, 
-            audioUrl: cached.audioUrl, 
-            cached: true 
-        });
+        return res.status(200).json({ success: true, audioUrl: cached.audioUrl, cached: true });
     }
 
-    // Thử lấy audio qua Cobalt trước, nếu thất bại tự động chuyển qua Piped
-    try {
-        let audioUrl;
-        try {
-            audioUrl = await getAudioFromCobalt(cleanUrl);
-        } catch (cobaltErr) {
-            audioUrl = await getAudioFromPiped(videoId);
-        }
+    // Quá trình vét cạn 4 tầng
+    let audioUrl = null;
+    let errors = [];
 
-        // Lưu Cache
-        audioCache.set(videoId, {
-            timestamp: Date.now(),
-            audioUrl: audioUrl
-        });
+    // 1. Thử Piped
+    try { audioUrl = await tryPiped(videoId); } 
+    catch (e) { errors.push(e.message); }
 
-        return res.status(200).json({ 
-            success: true, 
-            audioUrl: audioUrl, 
-            cached: false 
-        });
-
-    } catch (error) {
-        console.error('API Error:', error.message);
-        return res.status(500).json({ 
-            success: false, 
-            error: 'Failed to fetch audio stream',
-            details: error.message 
-        });
+    // 2. Thử Invidious (nếu 1 xịt)
+    if (!audioUrl) {
+        try { audioUrl = await tryInvidious(videoId); } 
+        catch (e) { errors.push(e.message); }
     }
+
+    // 3. Thử Cobalt (nếu 2 xịt)
+    if (!audioUrl) {
+        try { audioUrl = await tryCobalt(cleanUrl); } 
+        catch (e) { errors.push(e.message); }
+    }
+
+    // 4. Thử Proxy dự phòng (nếu 3 xịt)
+    if (!audioUrl) {
+        try { audioUrl = await tryAlternativeProxy(videoId); } 
+        catch (e) { errors.push(e.message); }
+    }
+
+    // Trả kết quả thành công
+    if (audioUrl) {
+        audioCache.set(videoId, { timestamp: Date.now(), audioUrl: audioUrl });
+        return res.status(200).json({ success: true, audioUrl: audioUrl, cached: false });
+    }
+
+    // Thất bại hoàn toàn
+    return res.status(500).json({ 
+        success: false, 
+        error: 'Tất cả 4 tầng proxy đều bị YouTube chặn IP trên Vercel.',
+        details: errors 
+    });
 };
+ 
