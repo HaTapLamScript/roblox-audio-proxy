@@ -1,7 +1,6 @@
 const ytpl = require('ytpl');
 
 module.exports = async (req, res) => {
-    // Bật CORS đầy đủ để Roblox / Delta gọi API không bị chặn
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -21,7 +20,6 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // Tự động bóc tách ID Playlist chính xác từ mọi định dạng link YouTube / YT Music
         let playlistId = targetQuery;
         if (targetQuery.includes('list=')) {
             const match = targetQuery.match(/list=([a-zA-Z0-9\-_]+)/);
@@ -30,7 +28,6 @@ module.exports = async (req, res) => {
             }
         }
 
-        // Lấy danh sách bài hát (giới hạn 150 bài đầu tiên để tối ưu tốc độ cho Serverless Function)
         const playlist = await ytpl(playlistId, { limit: 150 });
 
         const tracks = playlist.items.map(item => ({
