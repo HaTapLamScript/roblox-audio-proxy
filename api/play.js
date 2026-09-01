@@ -1,11 +1,11 @@
-const { ytmp3 } = require('iguro-ytdl');
+const ytdl = require('@distube/ytdl-core');
 
-// Bộ nhớ đệm lưu link audio để tối ưu cho lượng truy cập lớn (Cache 2 tiếng)
+// Cache lưu link/stream để hạn chế request trùng lặp
 const audioCache = new Map();
 const AUDIO_CACHE_TTL = 2 * 60 * 60 * 1000;
 
 module.exports = async (req, res) => {
-    // 1. Cấu hình CORS đầy đủ để Roblox CoreGui gọi không bị lỗi chặn
+    // 1. Cấu hình CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -24,40 +24,46 @@ module.exports = async (req, res) => {
 
     const cleanUrl = url.trim();
 
-    // 2. Kiểm tra cache trước để tiết kiệm tài nguyên server và trả kết quả tức thì
-    const cachedItem = audioCache.get(cleanUrl);
-    if (cachedItem && (Date.now() - cachedItem.timestamp < AUDIO_CACHE_TTL)) {
-        return res.redirect(302, cachedItem.audioUrl);
-    }
-
     try {
-        const result = await ytmp3(cleanUrl);
-        
-        // Kiểm tra kết quả trả về từ thư viện
-        if (!result || !result.status || !result.result || !result.result.url) {
-            return res.status(404).json({ 
+        // Kiểm tra link YouTube có hợp lệ không
+        if (!ytdl.validateURL(cleanUrl)) {
+            return res.status(400).json({ 
                 success: false, 
-                error: 'Không tìm thấy audio hoặc link đã hết hạn',
-                detail: result?.error || 'Không có link tải'
+                error: 'Link YouTube không hợp lệ' 
             });
         }
 
-        const audioStreamUrl = result.result.url;
+        // Thiết lập Header trả về Binary Audio cho Roblox (Không dùng Redirect 302)
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Cache-Control', 'public, max-age=7200');
 
-        // 3. Lưu vào Cache RAM phục vụ các request tiếp theo
-        audioCache.set(cleanUrl, {
-            timestamp: Date.now(),
-            audioUrl: audioStreamUrl
+        // Stream âm thanh trực tiếp từ YouTube về Client
+        const audioStream = ytdl(cleanUrl, {
+            filter: 'audioonly',
+            quality: 'highestaudio',
+            highWaterMark: 1 << 25 // Buffer 32MB chống đứt luồng
         });
 
-        // Redirect sang link tải/phát thực tế
-        return res.redirect(302, audioStreamUrl);
-        
+        audioStream.on('error', (err) => {
+            console.error('Lỗi Stream YTDL:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ 
+                    success: false, 
+                    error: 'Lỗi trích xuất luồng âm thanh từ YouTube' 
+                });
+            }
+        });
+
+        // Pipe dữ liệu âm thanh thẳng về response cho Roblox
+        audioStream.pipe(res);
+
     } catch (error) {
         console.error('Lỗi Play API:', error);
-        return res.status(500).json({ 
-            success: false, 
-            error: error.message || 'Lỗi server khi trích xuất audio' 
-        });
+        if (!res.headersSent) {
+            return res.status(500).json({ 
+                success: false, 
+                error: error.message || 'Lỗi server khi xử lý audio' 
+            });
+        }
     }
 };
