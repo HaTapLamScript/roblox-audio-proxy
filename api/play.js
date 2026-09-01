@@ -1,5 +1,5 @@
 // api/play.js
-const ytdl = require('ytdl-core');
+const axios = require('axios');
 
 module.exports = async (req, res) => {
   const { url } = req.query;
@@ -8,44 +8,47 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Validate URL
-    if (!ytdl.validateURL(url)) {
-      return res.status(400).json({ error: 'Invalid YouTube URL' });
-    }
+    // Gọi Vevioz API bằng POST
+    const formData = new URLSearchParams();
+    formData.append('url', url);
+    formData.append('type', 'mp3');
 
-    // Lấy thông tin video
-    const info = await ytdl.getInfo(url, {
-      requestOptions: {
-        timeout: 8000, // 8 giây để lấy thông tin
+    const response = await axios.post(
+      'https://api.vevioz.com/api/button/mp3/',
+      formData,
+      {
         headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        },
+        timeout: 10000
       }
-    });
+    );
 
-    // Chọn audio format tốt nhất (chỉ lấy audio)
-    const audioFormat = ytdl.chooseFormat(info.formats, {
-      quality: 'highestaudio',
-      filter: 'audioonly'
-    });
-
-    if (!audioFormat) {
-      return res.status(500).json({ error: 'No audio format found' });
+    const data = response.data;
+    
+    // Kiểm tra kết quả
+    if (data && data.success && data.data && data.data.url) {
+      return res.json({
+        success: true,
+        title: data.data.title || 'Unknown',
+        url: data.data.url,
+        duration: data.data.duration || '0:00',
+        thumbnail: data.data.thumbnail || ''
+      });
+    } else {
+      // Nếu API trả về thành công nhưng thiếu link
+      return res.status(500).json({
+        error: 'Vevioz không trả về link tải',
+        detail: data
+      });
     }
-
-    // Trả về link tải trực tiếp
-    res.json({
-      success: true,
-      title: info.videoDetails.title,
-      url: audioFormat.url,   // Đây là link .m4a hoặc .webm (vẫn phát được)
-      duration: info.videoDetails.lengthSeconds,
-      thumbnail: info.videoDetails.thumbnails?.[0]?.url || ''
-    });
   } catch (error) {
-    console.error('Lỗi ytdl:', error.message);
-    res.status(500).json({
-      error: 'Không thể lấy link',
-      detail: error.message
+    console.error('Lỗi Vevioz:', error.message);
+    return res.status(500).json({
+      error: 'Không thể lấy link MP3',
+      detail: error.message,
+      hint: 'Kiểm tra URL YouTube có hợp lệ không'
     });
   }
-}; 
+};
