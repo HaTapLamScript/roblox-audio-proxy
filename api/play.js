@@ -1,56 +1,43 @@
-const https = require('https');
-
-// Danh sách các Invidious Node công khai tốt nhất
-const NODES = [
-    'inv.tux.pizza',
-    'invidious.nerdvpn.de',
-    'invidious.drgns.space',
-    'vid.puffyan.us'
-];
-
-function checkNode(node, id) {
-    return new Promise((resolve, reject) => {
-        const req = https.get(`https://${node}/latest_version?id=${id}&itag=140&local=true`, {
-            method: 'HEAD',
-            timeout: 2500
-        }, (res) => {
-            if (res.statusCode >= 200 && res.statusCode < 400) {
-                resolve(`https://${node}/latest_version?id=${id}&itag=140&local=true`);
-            } else {
-                reject();
-            }
-        });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(); reject(); });
-    });
-}
+// api/play.js
+const axios = require('axios');
 
 module.exports = async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    
-    const id = (req.query.url || '').match(/(?:v=|\/)([\w-]{11})/)?.[1];
-    if (!id) return res.status(400).json({ success: false, error: 'Invalid URL' });
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'Missing url parameter' });
+  }
 
-    let audioUrl = null;
+  try {
+    // Gọi sang API Vevioz - dịch vụ lấy link MP3 từ YouTube
+    const veviozUrl = `https://api.vevioz.com/api/button/mp3/?url=${encodeURIComponent(url)}`;
+    const response = await axios.get(veviozUrl, {
+      timeout: 8000,  // 8 giây là an toàn
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
 
-    // Thử lần lượt các node để chọn ra node đang sống
-    for (const node of NODES) {
-        try {
-            audioUrl = await checkNode(node, id);
-            if (audioUrl) break;
-        } catch (e) {
-            continue;
-        }
+    // Dữ liệu trả về từ Vevioz có dạng:
+    // { success: true, data: { url: 'link_direct', title: '...', duration: '...' } }
+    const data = response.data;
+    if (data.success && data.data && data.data.url) {
+      return res.json({
+        success: true,
+        url: data.data.url,      // link tải trực tiếp
+        title: data.data.title,
+        duration: data.data.duration
+      });
+    } else {
+      return res.status(500).json({ 
+        error: 'API bên thứ ba không trả về link hợp lệ',
+        detail: data 
+      });
     }
-
-    // Nếu tất cả node HEAD request thất bại, dùng node mặc định
-    if (!audioUrl) {
-        audioUrl = `https://inv.tux.pizza/latest_version?id=${id}&itag=140&local=true`;
-    }
-
-    if (req.query.type === 'json' || req.headers['user-agent']?.includes('Roblox')) {
-        return res.status(200).json({ success: true, audioUrl: audioUrl });
-    }
-
-    return res.redirect(302, `${audioUrl}&download=true`);
-};
+  } catch (error) {
+    console.error('Lỗi proxy Vevioz:', error.message);
+    return res.status(500).json({ 
+      error: 'Không thể lấy link MP3',
+      message: error.message 
+    });
+  }
+}; 
