@@ -6,61 +6,92 @@ function extractVideoId(url) {
     return match ? match[1] : null;
 }
 
-function fetchJson(url, timeout = 4000) {
+function requestJson(url, postData = null, timeout = 4500) {
     return new Promise((resolve, reject) => {
-        const protocol = url.startsWith('https') ? https : http;
-        const req = protocol.get(url, {
+        const isHttps = url.startsWith('https');
+        const protocol = isHttps ? https : http;
+        const u = new URL(url);
+
+        const options = {
+            hostname: u.hostname,
+            port: u.port || (isHttps ? 443 : 80),
+            path: u.pathname + u.search,
+            method: postData ? 'POST' : 'GET',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                ...(postData && { 'Content-Type': 'application/json' })
             }
-        }, (res) => {
+        };
+
+        const req = protocol.request(options, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
                 if (res.statusCode >= 200 && res.statusCode < 300) {
                     try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
                 } else {
-                    reject(new Error(`Status ${res.statusCode}`));
+                    reject(new Error(`HTTP ${res.statusCode}`));
                 }
             });
         });
+
         req.on('error', reject);
         req.setTimeout(timeout, () => {
             req.destroy();
             reject(new Error('Timeout'));
         });
+
+        if (postData) {
+            req.write(JSON.stringify(postData));
+        }
+        req.end();
     });
 }
 
-// Lấy Direct Stream URL qua Piped Public Edge Nodes
-async function getDirectAudioStream(videoId) {
-    const edgeNodes = [
-        'https://pipedapi.kavin.rocks',
-        'https://api.piped.privacydev.net',
-        'https://pipedapi.tokhmi.xyz',
-        'https://pipedapi.moomoo.me'
+// Lấy audio stream qua hệ thống Cobalt / Direct Extractors
+async function fetchAudioStream(cleanUrl, videoId) {
+    // 1. Thử Cobalt API Instances
+    const cobaltInstances = [
+        'https://api.cobalt.tools/',
+        'https://cobalt-api.kwiatek.xyz/',
+        'https://co.wuk.sh/'
     ];
 
-    for (const node of edgeNodes) {
+    for (const inst of cobaltInstances) {
         try {
-            const data = await fetchJson(`${node}/streams/${videoId}`);
-            if (data && data.audioStreams && data.audioStreams.length > 0) {
-                // Sắp xếp chọn bitrate mượt nhất
-                data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-                return data.audioStreams[0].url;
+            const data = await requestJson(inst, {
+                url: cleanUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3'
+            }, 4000);
+
+            if (data && (data.url || data.audio)) {
+                return data.url || data.audio;
+            }
+            if (data && data.picker && data.picker.length > 0) {
+                return data.picker[0].url;
             }
         } catch (e) {
             continue;
         }
     }
-    throw new Error('No stream available');
+
+    // 2. Thử Public Direct Audio Resolver (Nguồn dự phòng)
+    try {
+        const altData = await requestJson(`https://yt-api.mp3juices.click/api/info/${videoId}`, null, 4000);
+        if (altData && altData.downloadUrl) {
+            return altData.downloadUrl;
+        }
+    } catch (e) {}
+
+    throw new Error('All resolver instances failed');
 }
 
 module.exports = async (req, res) => {
-    // Cấu hình CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
@@ -72,15 +103,17 @@ module.exports = async (req, res) => {
         return res.status(400).json({ success: false, error: 'Missing ?url=' });
     }
 
-    const videoId = extractVideoId(url.trim());
+    const cleanUrl = url.trim();
+    const videoId = extractVideoId(cleanUrl);
+
     if (!videoId) {
         return res.status(400).json({ success: false, error: 'Invalid YouTube URL' });
     }
 
     try {
-        const audioStreamUrl = await getDirectAudioStream(videoId);
+        const audioStreamUrl = await fetchAudioStream(cleanUrl, videoId);
 
-        // Nếu client yêu cầu dạng JSON (cho Roblox hoặc API App)
+        // Trả về dạng JSON nếu gọi từ Roblox HttpService hoặc API
         if (type === 'json') {
             return res.status(200).json({
                 success: true,
@@ -89,8 +122,7 @@ module.exports = async (req, res) => {
             });
         }
 
-        // Mặc định: Redirect (302) trực tiếp trình duyệt tới File Audio gốc của YouTube
-        // Cách này 100% không bị treo trình duyệt và phát ngay lập tức trên điện thoại!
+        // Mặc định: Redirect (302) trình duyệt thẳng đến URL file audio
         return res.redirect(302, audioStreamUrl);
 
     } catch (error) {
@@ -101,3 +133,4 @@ module.exports = async (req, res) => {
         });
     }
 };
+ 
