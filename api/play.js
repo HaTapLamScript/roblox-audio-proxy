@@ -11,16 +11,15 @@ module.exports = async (req, res) => {
     try {
         const info = await ytdl.getInfo(url);
         const audioFormat = info.formats
-            .filter(f => f.hasAudio)
+            .filter(f => f.hasAudio && !f.hasVideo)
             .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0))[0];
 
         if (!audioFormat) {
-            return res.status(404).json({ error: 'No audio format found' });
+            return res.status(404).json({ error: 'No audio format' });
         }
 
         res.json({ audioUrl: audioFormat.url });
     } catch (error) {
-        console.error(error.message);
         res.status(500).json({ error: error.message });
     }
-}; 
+};
