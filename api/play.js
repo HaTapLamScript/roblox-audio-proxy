@@ -5,25 +5,20 @@ const http = require('http');
 const audioCache = new Map();
 const CACHE_TTL = 2 * 60 * 60 * 1000;
 
-// Danh sách các Invidious Instance công khai ổn định
-const INVIDIOUS_INSTANCES = [
-    'https://invidious.nerdvpn.de',
-    'https://inv.tux.pizza',
-    'https://invidious.drgns.space',
-    'https://vid.puffyan.us'
-];
-
 // Hàm trích xuất Video ID từ URL YouTube
 function extractVideoId(url) {
     const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
     return match ? match[1] : null;
 }
 
-// Hàm gửi request HTTP/HTTPS cơ bản
-function fetchJson(url, timeout = 5000) {
+// Hàm gửi request JSON (POST / GET)
+function requestJson(options, postData = null, timeout = 5000) {
     return new Promise((resolve, reject) => {
-        const protocol = url.startsWith('https') ? https : http;
-        const req = protocol.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        const protocol = options.url.startsWith('https') ? https : http;
+        const req = protocol.request(options.url, {
+            method: options.method || 'GET',
+            headers: options.headers || {}
+        }, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
@@ -31,10 +26,10 @@ function fetchJson(url, timeout = 5000) {
                     try {
                         resolve(JSON.parse(data));
                     } catch (e) {
-                        reject(new Error('Invalid JSON'));
+                        reject(new Error('Invalid JSON response'));
                     }
                 } else {
-                    reject(new Error(`HTTP Status ${res.statusCode}`));
+                    reject(new Error(`HTTP ${res.statusCode}`));
                 }
             });
         });
@@ -44,34 +39,74 @@ function fetchJson(url, timeout = 5000) {
             req.destroy();
             reject(new Error('Request Timeout'));
         });
+
+        if (postData) {
+            req.write(JSON.stringify(postData));
+        }
+        req.end();
     });
 }
 
-// Hàm tìm audio stream từ các Invidious Instance
-async function getAudioFromInvidious(videoId) {
-    for (const instance of INVIDIOUS_INSTANCES) {
+// Layer 1: Lấy audio qua Cobalt API (Mới & Rất ổn định)
+async function getAudioFromCobalt(videoUrl) {
+    const cobaltInstances = [
+        'https://api.cobalt.tools/',
+        'https://cobalt-api.kwiatek.xyz/'
+    ];
+
+    for (const instance of cobaltInstances) {
         try {
-            const data = await fetchJson(`${instance}/api/v1/videos/${videoId}`, 4000);
-            
-            if (data && data.adaptiveFormats) {
-                // Lọc các format chỉ chứa audio (mimeType audio/mp4 hoặc audio/webm)
-                const audioFormats = data.adaptiveFormats.filter(f => f.type && f.type.startsWith('audio/'));
-                if (audioFormats.length > 0) {
-                    // Ưu tiên chọn format bitrate cao hơn
-                    audioFormats.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-                    return audioFormats[0].url;
+            const data = await requestJson({
+                url: instance,
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
                 }
+            }, {
+                url: videoUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3'
+            }, 4500);
+
+            if (data && (data.url || data.audio)) {
+                return data.url || data.audio;
             }
         } catch (err) {
-            // Thử instance tiếp theo nếu instance hiện tại lỗi
             continue;
         }
     }
-    throw new Error('All Invidious instances failed to retrieve audio');
+    throw new Error('Cobalt failed');
+}
+
+// Layer 2: Lấy audio qua Piped API (Dự phòng)
+async function getAudioFromPiped(videoId) {
+    const pipedInstances = [
+        'https://pipedapi.kavin.rocks',
+        'https://api.piped.privacydev.net',
+        'https://pipedapi.tokhmi.xyz'
+    ];
+
+    for (const instance of pipedInstances) {
+        try {
+            const data = await requestJson({
+                url: `${instance}/streams/${videoId}`
+            }, null, 4000);
+
+            if (data && data.audioStreams && data.audioStreams.length > 0) {
+                // Sắp xếp chọn bitrate tốt nhất
+                data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+                return data.audioStreams[0].url;
+            }
+        } catch (err) {
+            continue;
+        }
+    }
+    throw new Error('Piped failed');
 }
 
 module.exports = async (req, res) => {
-    // Thiết lập CORS
+    // CORS Header
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -85,12 +120,14 @@ module.exports = async (req, res) => {
         return res.status(400).json({ success: false, error: 'Missing ?url=' });
     }
 
-    const videoId = extractVideoId(url.trim());
+    const cleanUrl = url.trim();
+    const videoId = extractVideoId(cleanUrl);
+
     if (!videoId) {
         return res.status(400).json({ success: false, error: 'Invalid YouTube URL' });
     }
 
-    // Kiểm tra Cache
+    // Check Cache
     const cached = audioCache.get(videoId);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
         return res.status(200).json({ 
@@ -100,10 +137,16 @@ module.exports = async (req, res) => {
         });
     }
 
+    // Thử lấy audio qua Cobalt trước, nếu thất bại tự động chuyển qua Piped
     try {
-        const audioUrl = await getAudioFromInvidious(videoId);
-        
-        // Lưu cache
+        let audioUrl;
+        try {
+            audioUrl = await getAudioFromCobalt(cleanUrl);
+        } catch (cobaltErr) {
+            audioUrl = await getAudioFromPiped(videoId);
+        }
+
+        // Lưu Cache
         audioCache.set(videoId, {
             timestamp: Date.now(),
             audioUrl: audioUrl
@@ -114,8 +157,9 @@ module.exports = async (req, res) => {
             audioUrl: audioUrl, 
             cached: false 
         });
+
     } catch (error) {
-        console.error('Error in play.js:', error.message);
+        console.error('API Error:', error.message);
         return res.status(500).json({ 
             success: false, 
             error: 'Failed to fetch audio stream',
