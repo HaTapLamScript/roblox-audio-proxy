@@ -1,10 +1,10 @@
 {
   "name": "mambo-audio-proxy",
-  "version": "3.7.0",
-  "description": "Audio proxy using SaveTube API",
+  "version": "4.0.0",
+  "description": "Audio proxy using dew-downloader",
   "main": "api/search.js",
   "dependencies": {
-    "axios": "^1.7.2",
+    "dew-downloader": "^1.0.3",
     "yt-search": "^2.12.0"
   },
   "scripts": {
