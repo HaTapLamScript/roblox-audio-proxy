@@ -1,36 +1,33 @@
-const express = require('express');
 const ytdl = require('@distube/ytdl-core');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+module.exports = async (req, res) => {
+    // Cho phép CORS nếu bạn cần gọi từ frontend khác
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-// API Endpoint: /play?url=<youtube_url>
-app.get('/play', async (req, res) => {
+    const videoURL = req.query.url;
+
+    if (!videoURL || !ytdl.validateURL(videoURL)) {
+        return res.status(400).json({ 
+            error: 'Vui lòng cung cấp một URL YouTube hợp lệ thông qua tham số ?url=' 
+        });
+    }
+
     try {
-        const videoURL = req.query.url;
-
-        // Kiểm tra xem người dùng đã truyền URL hay chưa
-        if (!videoURL || !ytdl.validateURL(videoURL)) {
-            return res.status(400).json({ 
-                error: 'Vui lòng cung cấp một URL YouTube hợp lệ thông qua tham số ?url=' 
-            });
-        }
-
-        // Lấy thông tin video để đặt tên file tải về (tùy chọn)
+        // Lấy thông tin video để đặt tên file
         const info = await ytdl.getInfo(videoURL);
-        const title = info.videoDetails.title.replace(/[^\w\s]/gi, ''); // Xóa ký tự đặc biệt
+        const title = info.videoDetails.title.replace(/[^\w\s]/gi, '').trim() || 'audio';
 
-        // Thiết lập header để trình duyệt/client hiểu đây là file audio cần tải/stream
-        res.header('Content-Disposition', `attachment; filename="${title}.mp3"`);
-        res.header('Content-Type', 'audio/mpeg');
+        // Thiết lập header trả về file mp3
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.mp3"`);
+        res.setHeader('Content-Type', 'audio/mpeg');
 
-        // Lấy stream audio chất lượng cao nhất có cả âm thanh
+        // Tạo stream audio và pipe thẳng về client
         const audioStream = ytdl(videoURL, {
             quality: 'highestaudio',
             filter: 'audioonly'
         });
 
-        // Xử lý lỗi trong quá trình stream
         audioStream.on('error', (err) => {
             console.error('Lỗi Stream:', err);
             if (!res.headersSent) {
@@ -38,16 +35,12 @@ app.get('/play', async (req, res) => {
             }
         });
 
-        // Pipe trực tiếp stream vào Response của Express
         audioStream.pipe(res);
 
     } catch (error) {
         console.error('Lỗi API:', error);
-        res.status(500).json({ error: 'Đã xảy ra lỗi khi xử lý yêu cầu.' });
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Đã xảy ra lỗi hoặc video quá dài/bị chặn.' });
+        }
     }
-});
-
-app.listen(PORT, () => {
-    console.log(`Server đang chạy tại cổng ${PORT}`);
-});
- 
+};
