@@ -1,6 +1,35 @@
-const ytdl = require('@distube/ytdl-core');
+const axios = require('axios');
 const audioCache = new Map();
 const CACHE_TTL = 2 * 60 * 60 * 1000;
+
+function extractVideoId(url) {
+    const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/);
+    return match ? match[1] : null;
+}
+
+async function getAudioUrl(videoUrl) {
+    const videoId = extractVideoId(videoUrl);
+    if (!videoId) throw new Error('Invalid YouTube URL');
+
+    const response = await axios.post(
+        'https://api.savetube.su/v1/download',
+        { url: `https://www.youtube.com/watch?v=${videoId}` },
+        {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 15000
+        }
+    );
+
+    const data = response.data;
+    if (data.status !== 'success') {
+        throw new Error('SaveTube error: ' + (data.message || 'Unknown'));
+    }
+    const audio = data.data.audio || data.data.audios?.[0];
+    if (!audio || !audio.url) {
+        throw new Error('No audio URL');
+    }
+    return audio.url;
+}
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -23,27 +52,11 @@ module.exports = async (req, res) => {
     }
 
     try {
-        const info = await ytdl.getInfo(cleanUrl, {
-            requestOptions: {
-                maxRedirects: 5,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            }
-        });
-
-        const audioFormat = info.formats
-            .filter(f => f.hasAudio)
-            .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0))[0];
-
-        if (!audioFormat || !audioFormat.url) {
-            throw new Error('No audio format found');
-        }
-
-        audioCache.set(cleanUrl, { timestamp: Date.now(), audioUrl: audioFormat.url });
-        return res.status(200).json({ success: true, audioUrl: audioFormat.url });
+        const audioUrl = await getAudioUrl(cleanUrl);
+        audioCache.set(cleanUrl, { timestamp: Date.now(), audioUrl });
+        return res.status(200).json({ success: true, audioUrl });
     } catch (error) {
         console.error('Play error:', error.message);
         return res.status(500).json({ success: false, error: error.message });
     }
-}; 
+};
