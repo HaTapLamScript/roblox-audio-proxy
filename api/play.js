@@ -1,34 +1,20 @@
-const axios = require('axios');
+const { youtube } = require('dew-downloader');
 const audioCache = new Map();
 const CACHE_TTL = 2 * 60 * 60 * 1000;
 
-function extractVideoId(url) {
-    const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/);
-    return match ? match[1] : null;
-}
-
-async function getAudioUrl(videoUrl) {
-    const videoId = extractVideoId(videoUrl);
-    if (!videoId) throw new Error('Invalid YouTube URL');
-
-    const response = await axios.post(
-        'https://api.savetube.su/v1/download',
-        { url: `https://www.youtube.com/watch?v=${videoId}` },
-        {
-            headers: { 'Content-Type': 'application/json' },
-            timeout: 15000
+async function getAudioUrl(videoUrl, retries = 2) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const result = await youtube.download(videoUrl, 'mp3');
+            if (!result || !result.download) {
+                throw new Error('No download link');
+            }
+            return result.download;
+        } catch (err) {
+            if (attempt === retries) throw err;
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
-    );
-
-    const data = response.data;
-    if (data.status !== 'success') {
-        throw new Error('SaveTube error: ' + (data.message || 'Unknown'));
     }
-    const audio = data.data.audio || data.data.audios?.[0];
-    if (!audio || !audio.url) {
-        throw new Error('No audio URL');
-    }
-    return audio.url;
 }
 
 module.exports = async (req, res) => {
@@ -59,4 +45,4 @@ module.exports = async (req, res) => {
         console.error('Play error:', error.message);
         return res.status(500).json({ success: false, error: error.message });
     }
-};
+}; 
