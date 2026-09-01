@@ -1,13 +1,9 @@
- {
+{
   "name": "youtube-audio-api",
   "version": "1.0.0",
-  "description": "Simple YouTube audio stream API",
-  "main": "api/play.js",
-  "scripts": {
-    "start": "node api/play.js"
-  },
+  "description": "Simple YouTube audio stream API on Vercel",
   "dependencies": {
-    "@distube/ytdl-core": "^4.16.4",
-    "express": "^4.19.2"
+    "@distube/ytdl-core": "^4.16.4"
   }
 }
+ 
