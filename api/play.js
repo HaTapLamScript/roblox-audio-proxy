@@ -1,11 +1,7 @@
 const ytdl = require('@distube/ytdl-core');
 
-// Cache lưu link/stream để hạn chế request trùng lặp
-const audioCache = new Map();
-const AUDIO_CACHE_TTL = 2 * 60 * 60 * 1000;
-
 module.exports = async (req, res) => {
-    // 1. Cấu hình CORS
+    // Thiết lập CORS Header cho phép mọi Request từ Client / Roblox Executor
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -24,37 +20,37 @@ module.exports = async (req, res) => {
 
     const cleanUrl = url.trim();
 
+    // Kiểm tra liên kết YouTube hợp lệ
+    if (!ytdl.validateURL(cleanUrl)) {
+        return res.status(400).json({
+            success: false,
+            error: 'Đường dẫn YouTube không hợp lệ'
+        });
+    }
+
     try {
-        // Kiểm tra link YouTube có hợp lệ không
-        if (!ytdl.validateURL(cleanUrl)) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Link YouTube không hợp lệ' 
-            });
-        }
-
-        // Thiết lập Header trả về Binary Audio cho Roblox (Không dùng Redirect 302)
+        // Cấu hình Header phản hồi định dạng dữ liệu âm thanh MP3
         res.setHeader('Content-Type', 'audio/mpeg');
-        res.setHeader('Cache-Control', 'public, max-age=7200');
+        res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
 
-        // Stream âm thanh trực tiếp từ YouTube về Client
+        // Tạo Stream lấy dữ liệu âm thanh trực tiếp từ YouTube
         const audioStream = ytdl(cleanUrl, {
-            filter: 'audioonly',
             quality: 'highestaudio',
-            highWaterMark: 1 << 25 // Buffer 32MB chống đứt luồng
+            filter: 'audioonly',
+            highWaterMark: 1 << 25
         });
 
         audioStream.on('error', (err) => {
-            console.error('Lỗi Stream YTDL:', err);
+            console.error('Lỗi Stream Audio:', err);
             if (!res.headersSent) {
-                res.status(500).json({ 
-                    success: false, 
-                    error: 'Lỗi trích xuất luồng âm thanh từ YouTube' 
+                return res.status(500).json({
+                    success: false,
+                    error: 'Không thể xử lý dòng dữ liệu âm thanh'
                 });
             }
         });
 
-        // Pipe dữ liệu âm thanh thẳng về response cho Roblox
+        // Đổ dữ liệu MP3 trực tiếp về Client (StatusCode 200)
         audioStream.pipe(res);
 
     } catch (error) {
@@ -62,7 +58,7 @@ module.exports = async (req, res) => {
         if (!res.headersSent) {
             return res.status(500).json({ 
                 success: false, 
-                error: error.message || 'Lỗi server khi xử lý audio' 
+                error: error.message || 'Lỗi server khi trích xuất audio' 
             });
         }
     }
