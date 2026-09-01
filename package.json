@@ -7,7 +7,7 @@
     "@distube/ytdl-core": "^4.15.9",
     "https-proxy-agent": "^7.0.2",
     "iguro-ytdl": "^1.0.0",
-    "ytpl": "^2.3.2"
+    "ytpl": "latest"
   },
   "scripts": {
     "start": "node index.js"
