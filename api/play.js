@@ -1,68 +1,75 @@
-const ytdl = require('@distube/ytdl-core');
+const ytdlp = require('yt-dlp-exec');
 const axios = require('axios');
+const ytdl = require('@distube/ytdl-core');
 
 const audioCache = new Map();
 const CACHE_TTL = 2 * 60 * 60 * 1000;
 
-// Hàm lấy URL từ ytdl-core với cookie giả lập
-async function getYtdlUrl(videoUrl) {
+// Lấy link audio bằng yt-dlp (ưu tiên)
+async function getAudioUrlYtDlp(videoUrl) {
+    try {
+        const url = await ytdlp(videoUrl, {
+            flag: ['-f', 'bestaudio', '-g'],
+            extractorArgs: ['--no-check-certificate'],
+            timeout: 15000
+        });
+        if (typeof url === 'string') return url;
+        if (Array.isArray(url) && url.length > 0) return url[0];
+        throw new Error('No URL from yt-dlp');
+    } catch (err) {
+        throw new Error(`yt-dlp failed: ${err.message}`);
+    }
+}
+
+// Fallback: ytdl-core
+async function getAudioUrlYtdl(videoUrl) {
     const info = await ytdl.getInfo(videoUrl, {
         requestOptions: {
-            maxRedirects: 5,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Cookie': 'PREF=hl=en&gl=US' // cookie mặc định
-            }
+                'Cookie': process.env.YT_COOKIE || ''
+            },
+            timeout: 10000
         }
     });
-
-    // Lọc định dạng audio-only, ưu tiên chất lượng thấp
-    const audioFormats = info.formats.filter(f => f.hasAudio && !f.hasVideo);
-    if (audioFormats.length === 0) {
-        // Nếu không có audio-only, lấy bất kỳ có audio
-        const anyAudio = info.formats.filter(f => f.hasAudio);
-        if (anyAudio.length === 0) {
-            throw new Error('No audio format');
-        }
-        anyAudio.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
-        return anyAudio[0].url;
-    }
+    const audioFormats = info.formats.filter(f => f.hasAudio);
+    if (audioFormats.length === 0) throw new Error('No audio format');
     audioFormats.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
     return audioFormats[0].url;
 }
 
-// Hàm dự phòng dùng API Vevioz (không cần key)
-async function getVeviozUrl(videoUrl) {
-    // Lấy video ID từ URL
+// Fallback cuối cùng: API savetube (không cần key)
+async function getAudioUrlSaveTube(videoUrl) {
     const videoId = videoUrl.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/)?.[1];
-    if (!videoId) throw new Error('Invalid YouTube URL');
-
-    const apiUrl = `https://api.vevioz.com/api/button/mp3/${videoId}`;
-    const response = await axios.get(apiUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        timeout: 10000
+    if (!videoId) throw new Error('Invalid video ID');
+    // Lấy link trực tiếp từ savetube
+    const response = await axios.post('https://api.savetube.app/v1/download', {
+        url: `https://www.youtube.com/watch?v=${videoId}`
+    }, {
+        headers: { 'Content-Type': 'application/json' }
     });
-
-    // Response thường chứa link trong data.link hoặc data.download
     const data = response.data;
-    const link = data.link || data.download || data.url || data['1080'] || data['720'] || data['360'];
-    if (!link) {
-        throw new Error('No download link from Vevioz');
-    }
-    return link;
+    if (data.status !== 'success') throw new Error('SaveTube API failed');
+    const audio = data.data.audio || data.data.audios?.[0];
+    if (!audio || !audio.url) throw new Error('No audio URL from SaveTube');
+    return audio.url;
 }
 
-// Hàm tổng hợp với fallback
+// Hàm tổng hợp với thứ tự ưu tiên
 async function getAudioUrl(videoUrl) {
+    // Thử yt-dlp trước
     try {
-        // Thử ytdl-core trước
-        return await getYtdlUrl(videoUrl);
-    } catch (ytdlError) {
-        console.warn('ytdl-core failed, falling back to Vevioz:', ytdlError.message);
-        // Thử Vevioz
-        return await getVeviozUrl(videoUrl);
+        return await getAudioUrlYtDlp(videoUrl);
+    } catch (err) {
+        console.warn('yt-dlp error:', err.message);
+        // Thử ytdl-core
+        try {
+            return await getAudioUrlYtdl(videoUrl);
+        } catch (err2) {
+            console.warn('ytdl-core error:', err2.message);
+            // Thử SaveTube
+            return await getAudioUrlSaveTube(videoUrl);
+        }
     }
 }
 
@@ -92,6 +99,6 @@ module.exports = async (req, res) => {
         return res.status(200).json({ success: true, audioUrl });
     } catch (error) {
         console.error('Play error:', error.message);
-        return res.status(500).json({ success: false, error: error.message || 'Failed to extract audio' });
+        return res.status(500).json({ success: false, error: error.message });
     }
 };
