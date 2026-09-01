@@ -1,36 +1,53 @@
-const axios = require('axios');
+const express = require('express');
+const ytdl = require('@distube/ytdl-core');
 
-module.exports = async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'Missing ?url=' });
-    }
-
+// API Endpoint: /play?url=<youtube_url>
+app.get('/play', async (req, res) => {
     try {
-        // Lấy video ID từ URL
-        const videoId = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/)[1];
-        if (!videoId) {
-            return res.status(400).json({ error: 'Invalid YouTube URL' });
+        const videoURL = req.query.url;
+
+        // Kiểm tra xem người dùng đã truyền URL hay chưa
+        if (!videoURL || !ytdl.validateURL(videoURL)) {
+            return res.status(400).json({ 
+                error: 'Vui lòng cung cấp một URL YouTube hợp lệ thông qua tham số ?url=' 
+            });
         }
 
-        // Gọi API Vevioz
-        const response = await axios.get(
-            `https://api.vevioz.com/api/button/mp3/${videoId}`,
-            { timeout: 10000 }
-        );
+        // Lấy thông tin video để đặt tên file tải về (tùy chọn)
+        const info = await ytdl.getInfo(videoURL);
+        const title = info.videoDetails.title.replace(/[^\w\s]/gi, ''); // Xóa ký tự đặc biệt
 
-        const data = response.data;
-        // Kiểm tra nhiều trường có thể chứa link
-        const audioUrl = data.link || data.download || data.url || data['1080'] || data['720'] || data['360'];
-        if (!audioUrl) {
-            return res.status(404).json({ error: 'No audio link found' });
-        }
+        // Thiết lập header để trình duyệt/client hiểu đây là file audio cần tải/stream
+        res.header('Content-Disposition', `attachment; filename="${title}.mp3"`);
+        res.header('Content-Type', 'audio/mpeg');
 
-        res.json({ audioUrl });
+        // Lấy stream audio chất lượng cao nhất có cả âm thanh
+        const audioStream = ytdl(videoURL, {
+            quality: 'highestaudio',
+            filter: 'audioonly'
+        });
+
+        // Xử lý lỗi trong quá trình stream
+        audioStream.on('error', (err) => {
+            console.error('Lỗi Stream:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Không thể xử lý luồng âm thanh.' });
+            }
+        });
+
+        // Pipe trực tiếp stream vào Response của Express
+        audioStream.pipe(res);
+
     } catch (error) {
-        console.error('Play error:', error.message);
-        res.status(500).json({ error: error.message });
+        console.error('Lỗi API:', error);
+        res.status(500).json({ error: 'Đã xảy ra lỗi khi xử lý yêu cầu.' });
     }
-}; 
+});
+
+app.listen(PORT, () => {
+    console.log(`Server đang chạy tại cổng ${PORT}`);
+});
+ 
