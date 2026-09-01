@@ -1,4 +1,4 @@
-const ytdl = require('@distube/ytdl-core');
+const ytdl = require('ytdl-core');
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -10,16 +10,12 @@ module.exports = async (req, res) => {
 
     try {
         const info = await ytdl.getInfo(url);
-        const audioFormat = info.formats
-            .filter(f => f.hasAudio && !f.hasVideo)
-            .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0))[0];
-
-        if (!audioFormat) {
-            return res.status(404).json({ error: 'No audio format' });
+        const audio = info.formats.find(f => f.audioCodec && !f.videoCodec);
+        if (!audio) {
+            return res.status(404).json({ error: 'No audio' });
         }
-
-        res.json({ audioUrl: audioFormat.url });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.json({ audioUrl: audio.url });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-};
+}; 
