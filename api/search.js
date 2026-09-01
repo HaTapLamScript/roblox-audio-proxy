@@ -20,20 +20,29 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // Tìm kiếm YouTube với từ khóa người dùng nhập (lấy tối đa 15 kết quả)
         const searchResult = await ytSearch(searchTerm);
-        const videos = searchResult.videos.slice(0, 15);
+        // Lấy chính xác 50 kết quả đầu tiên, vừa đủ phong phú mà không lo quá tải server
+        const videos = searchResult.videos.slice(0, 50);
 
         if (!videos || videos.length === 0) {
             return res.status(404).json({ success: false, error: 'Không tìm thấy kết quả phù hợp!' });
         }
 
-        const tracks = videos.map(item => ({
-            title: item.title,
-            videoId: item.videoId,
-            duration: item.timestamp,
-            url: item.url
-        }));
+        const tracks = videos.map(item => {
+            // Tự động tìm link thumbnail từ mọi biến thể của yt-search
+            let thumbUrl = item.thumbnail || item.image || '';
+            if (!thumbUrl && item.videoId) {
+                thumbUrl = `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg`;
+            }
+
+            return {
+                title: item.title,
+                videoId: item.videoId,
+                duration: item.timestamp,
+                thumbnail: thumbUrl,
+                url: item.url
+            };
+        });
 
         return res.status(200).json({
             success: true,
@@ -50,4 +59,3 @@ module.exports = async (req, res) => {
         });
     }
 };
-          
