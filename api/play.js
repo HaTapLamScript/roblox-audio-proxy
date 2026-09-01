@@ -9,17 +9,19 @@ function getAudioUrl(videoUrl, timeout = 9500) {
             reject(new Error('⏱ Timeout: Vercel giới hạn 10s, video quá dài hoặc mạng chậm.'));
         }, timeout);
 
+        // ✅ QUAN TRỌNG: KHÔNG đặt maxRedirects: 0
+        // Để mặc định cho phép YouTube chuyển hướng bình thường
         const requestOptions = {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept-Language': 'en-US,en;q=0.9',
-            },
-            maxRedirects: 0,
+            }
+            // 👇 XÓA dòng này: maxRedirects: 0
         };
 
         ytdl.getInfo(videoUrl, {
             requestOptions: requestOptions,
-            cache: false  // 🔥 Quan trọng: Tắt cache đĩa để tránh lỗi EROFS
+            cache: false // ✅ Giữ nguyên để tránh lỗi EROFS
         })
         .then(info => {
             clearTimeout(timer);
