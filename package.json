@@ -1,10 +1,11 @@
 {
   "name": "mambo-audio-proxy",
-  "version": "2.2.0",
-  "description": "Roblox audio proxy using play-dl",
+  "version": "2.3.0",
+  "description": "Roblox audio proxy with fallback API",
   "main": "index.js",
   "dependencies": {
-    "play-dl": "^1.9.7",
+    "@distube/ytdl-core": "^4.15.9",
+    "axios": "^1.6.7",
     "yt-search": "^2.12.0"
   },
   "scripts": {
