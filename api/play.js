@@ -1,7 +1,36 @@
 const ytdl = require('@distube/ytdl-core');
 
+// Cache lưu audioUrl, thời gian 2 tiếng
+const audioCache = new Map();
+const CACHE_TTL = 2 * 60 * 60 * 1000;
+
+// Hàm lấy URL audio với timeout 8 giây
+function getAudioUrl(url, timeout = 8000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error('Timeout'));
+        }, timeout);
+
+        ytdl.getInfo(url, { requestOptions: { maxRedirects: 0 } })
+            .then(info => {
+                clearTimeout(timer);
+                // Chọn định dạng âm thanh chất lượng thấp nhất để tối ưu
+                const audioFormat = ytdl.chooseFormat(info.formats, { quality: 'lowestaudio' });
+                if (!audioFormat) {
+                    reject(new Error('No audio format found'));
+                } else {
+                    resolve(audioFormat.url);
+                }
+            })
+            .catch(err => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
 module.exports = async (req, res) => {
-    // Thiết lập CORS Header cho phép mọi Request từ Client / Roblox Executor
+    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -12,54 +41,28 @@ module.exports = async (req, res) => {
 
     const { url } = req.query;
     if (!url) {
-        return res.status(400).json({ 
-            success: false, 
-            error: 'Thiếu tham số ?url=' 
-        });
+        return res.status(400).json({ success: false, error: 'Missing ?url=' });
     }
 
     const cleanUrl = url.trim();
 
-    // Kiểm tra liên kết YouTube hợp lệ
-    if (!ytdl.validateURL(cleanUrl)) {
-        return res.status(400).json({
-            success: false,
-            error: 'Đường dẫn YouTube không hợp lệ'
-        });
+    // Kiểm tra cache
+    const cached = audioCache.get(cleanUrl);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+        return res.status(200).json({ success: true, audioUrl: cached.audioUrl });
     }
 
     try {
-        // Cấu hình Header phản hồi định dạng dữ liệu âm thanh MP3
-        res.setHeader('Content-Type', 'audio/mpeg');
-        res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
-
-        // Tạo Stream lấy dữ liệu âm thanh trực tiếp từ YouTube
-        const audioStream = ytdl(cleanUrl, {
-            quality: 'highestaudio',
-            filter: 'audioonly',
-            highWaterMark: 1 << 25
+        const audioUrl = await getAudioUrl(cleanUrl);
+        audioCache.set(cleanUrl, {
+            timestamp: Date.now(),
+            audioUrl: audioUrl
         });
 
-        audioStream.on('error', (err) => {
-            console.error('Lỗi Stream Audio:', err);
-            if (!res.headersSent) {
-                return res.status(500).json({
-                    success: false,
-                    error: 'Không thể xử lý dòng dữ liệu âm thanh'
-                });
-            }
-        });
-
-        // Đổ dữ liệu MP3 trực tiếp về Client (StatusCode 200)
-        audioStream.pipe(res);
-
+        // Trả về JSON thay vì redirect
+        return res.status(200).json({ success: true, audioUrl });
     } catch (error) {
-        console.error('Lỗi Play API:', error);
-        if (!res.headersSent) {
-            return res.status(500).json({ 
-                success: false, 
-                error: error.message || 'Lỗi server khi trích xuất audio' 
-            });
-        }
+        console.error('Error in play.js:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to get audio' });
     }
 };
