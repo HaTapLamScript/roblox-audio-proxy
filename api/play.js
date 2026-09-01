@@ -1,46 +1,96 @@
 const ytdl = require('@distube/ytdl-core');
 
+// Cache lưu audioUrl trong 2 tiếng
+const audioCache = new Map();
+const CACHE_TTL = 2 * 60 * 60 * 1000;
+
+// Giả lập Client Android để vượt Anti-Bot (Sign in to confirm you're not a bot)
+const agent = ytdl.createAgent([
+    {
+        name: 'ANDROID',
+        version: '19.02.39',
+        clientName: 'ANDROID'
+    }
+]);
+
+// Hàm lấy direct stream URL với Timeout tối đa 9 giây (phù hợp với giới hạn 10s của Vercel Free)
+function getAudioUrl(url, timeout = 9000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error('Request Timeout (Vercel Serverless Limit)'));
+        }, timeout);
+
+        ytdl.getInfo(url, { agent })
+            .then(info => {
+                clearTimeout(timer);
+                
+                // Lọc định dạng chỉ có âm thanh với dung lượng tối ưu
+                const audioFormat = ytdl.chooseFormat(info.formats, { 
+                    quality: 'lowestaudio', 
+                    filter: 'audioonly' 
+                });
+
+                if (audioFormat && audioFormat.url) {
+                    resolve(audioFormat.url);
+                } else {
+                    reject(new Error('No audio format found'));
+                }
+            })
+            .catch(err => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
 module.exports = async (req, res) => {
-    // Cho phép CORS nếu bạn cần gọi từ frontend khác
+    // Thiết lập CORS cho Roblox HttpService và Client Web
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    const videoURL = req.query.url;
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
 
-    if (!videoURL || !ytdl.validateURL(videoURL)) {
-        return res.status(400).json({ 
-            error: 'Vui lòng cung cấp một URL YouTube hợp lệ thông qua tham số ?url=' 
+    const { url } = req.query;
+    if (!url) {
+        return res.status(400).json({ success: false, error: 'Missing ?url=' });
+    }
+
+    const cleanUrl = url.trim();
+
+    // Trả về dữ liệu từ Cache nếu có
+    const cached = audioCache.get(cleanUrl);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+        return res.status(200).json({ 
+            success: true, 
+            audioUrl: cached.audioUrl, 
+            cached: true 
         });
     }
 
     try {
-        // Lấy thông tin video để đặt tên file
-        const info = await ytdl.getInfo(videoURL);
-        const title = info.videoDetails.title.replace(/[^\w\s]/gi, '').trim() || 'audio';
-
-        // Thiết lập header trả về file mp3
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.mp3"`);
-        res.setHeader('Content-Type', 'audio/mpeg');
-
-        // Tạo stream audio và pipe thẳng về client
-        const audioStream = ytdl(videoURL, {
-            quality: 'highestaudio',
-            filter: 'audioonly'
+        const audioUrl = await getAudioUrl(cleanUrl);
+        
+        // Lưu kết quả vào Cache
+        audioCache.set(cleanUrl, {
+            timestamp: Date.now(),
+            audioUrl: audioUrl
         });
 
-        audioStream.on('error', (err) => {
-            console.error('Lỗi Stream:', err);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Không thể xử lý luồng âm thanh.' });
-            }
+        return res.status(200).json({ 
+            success: true, 
+            audioUrl: audioUrl, 
+            cached: false 
         });
-
-        audioStream.pipe(res);
-
     } catch (error) {
-        console.error('Lỗi API:', error);
-        if (!res.headersSent) {
-            res.status(500).json({ error: 'Đã xảy ra lỗi hoặc video quá dài/bị chặn.' });
-        }
+        console.error('Error in play.js:', error.message);
+        return res.status(500).json({ 
+            success: false, 
+            error: error.message || 'Failed to get audio',
+            hint: 'YouTube IP check triggered or stream fetch timed out' 
+        });
     }
 };
+ 
