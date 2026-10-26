@@ -9,7 +9,6 @@ module.exports = async (req, res) => {
     if (!url) return res.status(400).json({ error: 'Missing ?url=' });
 
     try {
-        // Lấy videoId từ URL YouTube
         let videoId;
         try {
             const parsed = new URL(url);
@@ -20,19 +19,38 @@ module.exports = async (req, res) => {
 
         if (!videoId) return res.status(400).json({ error: 'Không tìm thấy videoId' });
 
-        // Gọi Piped API
-        const r = await fetch(`https://pipedapi.kavin.rocks/streams/${videoId}`);
-        if (!r.ok) throw new Error(`Piped API lỗi: ${r.status}`);
+        // Thử lần lượt các instance Piped
+        const instances = [
+            'https://pipedapi.adminforge.de',
+            'https://api.piped.yt',
+            'https://piped-api.garudalinux.org',
+            'https://pipedapi.kavin.rocks',
+        ];
 
-        const data = await r.json();
+        let audio = null;
+        let lastError = null;
 
-        // Lấy audio stream bitrate cao nhất
-        const audio = data.audioStreams
-            ?.filter(s => s.url)
-            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+        for (const instance of instances) {
+            try {
+                const r = await fetch(`${instance}/streams/${videoId}`, {
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (!r.ok) { lastError = `${instance}: ${r.status}`; continue; }
+
+                const data = await r.json();
+                audio = data.audioStreams
+                    ?.filter(s => s.url)
+                    .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+
+                if (audio?.url) break; // Có kết quả thì dừng
+            } catch (e) {
+                lastError = `${instance}: ${e.message}`;
+                continue;
+            }
+        }
 
         if (!audio?.url) {
-            return res.status(404).json({ error: 'Không tìm thấy audio stream' });
+            return res.status(404).json({ error: 'Tất cả instance đều lỗi', detail: lastError });
         }
 
         return res.redirect(302, audio.url);
