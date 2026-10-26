@@ -23,8 +23,13 @@ module.exports = async (req, res) => {
             return res.redirect(302, r.headers.get('location'));
         }
 
-        const data = await r.json();
-        return res.status(r.status).json(data);
+        const text = await r.text();
+        try {
+            const data = JSON.parse(text);
+            return res.status(r.status).json(data);
+        } catch {
+            return res.status(r.status).json({ error: text.trim() });
+        }
 
     } catch (error) {
         if (error.name === 'TimeoutError') {
