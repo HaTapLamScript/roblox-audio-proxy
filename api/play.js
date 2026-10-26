@@ -9,6 +9,7 @@ module.exports = async (req, res) => {
     if (!url) return res.status(400).json({ error: 'Missing ?url=' });
 
     try {
+        // Lấy videoId
         let videoId;
         try {
             const parsed = new URL(url);
@@ -16,17 +17,31 @@ module.exports = async (req, res) => {
         } catch {
             return res.status(400).json({ error: 'URL không hợp lệ' });
         }
-
         if (!videoId) return res.status(400).json({ error: 'Không tìm thấy videoId' });
 
-        // Thử lần lượt các instance Piped
-        const instances = [
+        // Lấy danh sách instance đang hoạt động (tự cập nhật)
+        let instances = [
+            'https://api.piped.private.coffee',
             'https://pipedapi.adminforge.de',
             'https://api.piped.yt',
             'https://piped-api.garudalinux.org',
-            'https://pipedapi.kavin.rocks',
         ];
 
+        try {
+            const listRes = await fetch(
+                'https://raw.githubusercontent.com/jayxdcode/piped-instances/main/public/minimal.json',
+                { signal: AbortSignal.timeout(3000) }
+            );
+            if (listRes.ok) {
+                const listData = await listRes.json();
+                const dynamic = listData.instances
+                    ?.filter(i => i.api_url)
+                    .map(i => i.api_url);
+                if (dynamic?.length > 0) instances = dynamic;
+            }
+        } catch (_) { /* dùng fallback hardcode nếu fetch list lỗi */ }
+
+        // Thử từng instance
         let audio = null;
         let lastError = null;
 
@@ -42,7 +57,7 @@ module.exports = async (req, res) => {
                     ?.filter(s => s.url)
                     .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
 
-                if (audio?.url) break; // Có kết quả thì dừng
+                if (audio?.url) break;
             } catch (e) {
                 lastError = `${instance}: ${e.message}`;
                 continue;
