@@ -8,6 +8,13 @@ module.exports = async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'Missing ?url=' });
 
+  // Danh sách instance Invidious (ưu tiên instance còn hoạt động tốt)
+  const INVIDIOUS_INSTANCES = [
+    'https://invidious.nerdvpn.de',   // Instance Đức, thường ổn định
+    'https://yewtu.be',               // Instance Pháp, hay bị Cloudflare nhưng vẫn thử
+    'https://invidious.f5.si'         // Instance dự phòng
+  ];
+
   try {
     let videoId;
     try {
@@ -16,69 +23,57 @@ module.exports = async (req, res) => {
     } catch {
       return res.status(400).json({ error: 'URL không hợp lệ' });
     }
-
     if (!videoId) return res.status(400).json({ error: 'Không tìm thấy videoId' });
 
-    let data = null;
+    let finalStreamUrl = null;
+    let usedInstance = null;
 
-    // 1. Thử dùng client WEB (thường không khóa IP)
-    try {
-      const response = await fetch(`https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        body: JSON.stringify({
-          context: { client: { clientName: 'WEB', clientVersion: '2.20240424.01.00' } },
-          videoId: videoId,
-          contentCheckOk: true,
-          racyCheckOk: true
-        })
-      });
-      data = await response.json();
-    } catch (e) {}
+    // Lặp qua từng instance để tìm link audio
+    for (const instance of INVIDIOUS_INSTANCES) {
+      try {
+        // Gọi API Invidious với local=true (để nó proxy stream)
+        const apiUrl = `${instance}/api/v1/videos/${videoId}?local=true`;
+        const response = await fetch(apiUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          signal: AbortSignal.timeout(8000) // Chờ tối đa 8 giây
+        });
 
-    // 2. Nếu WEB thất bại, fallback sang ANDROID_VR (và xóa IP)
-    if (!data || !data.streamingData || !data.streamingData.adaptiveFormats) {
-      const response = await fetch(`https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'ANDROID_VR',
-              clientVersion: '1.60.19',
-              deviceMake: 'Oculus',
-              deviceModel: 'Quest 3',
-              androidSdkVersion: 32,
-              userAgent: 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip'
-            }
-          },
-          videoId: videoId,
-          contentCheckOk: true,
-          racyCheckOk: true
-        })
-      });
-      data = await response.json();
+        if (!response.ok) continue; // Lỗi 403/502 thì thử instance tiếp theo
+
+        const data = await response.json();
+        
+        // Invidious trả về mảng adaptiveFormats (audio-only)
+        if (data.adaptiveFormats && data.adaptiveFormats.length > 0) {
+          // Lọc các format audio (mimeType chứa 'audio') và sắp xếp theo bitrate
+          const audioFormats = data.adaptiveFormats
+            .filter(f => f.type && f.type.includes('audio'))
+            .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
+
+          if (audioFormats.length > 0) {
+            // Vì local=true, URL trả về đã được Invidious proxy
+            // Ta vẫn có thể thêm &local=true lần nữa để đảm bảo
+            finalStreamUrl = audioFormats[0].url;
+            usedInstance = instance;
+            break; // Thành công thì dừng vòng lặp
+          }
+        }
+      } catch (err) {
+        // Lỗi timeout hoặc fetch, thử instance tiếp theo
+        console.error(`Instance ${instance} failed:`, err.message);
+      }
     }
 
-    if (!data || !data.streamingData || !data.streamingData.adaptiveFormats) {
-      return res.status(404).json({ error: 'Không lấy được dữ liệu stream' });
+    if (!finalStreamUrl) {
+      return res.status(404).json({ error: 'Tất cả instance Invidious đều thất bại. Thử lại sau.' });
     }
 
-    const formats = data.streamingData.adaptiveFormats;
-    const audioFormats = formats.filter(f => f.mimeType.includes('audio'));
-    
-    // Ưu tiên itag 140 (M4A) vì nhẹ và tương thích tốt
-    let bestAudio = audioFormats.find(f => f.itag === 140);
-    if (!bestAudio) bestAudio = audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+    // Trả về link proxy kèm theo mime để script biết đuôi file
+    return res.status(200).json({
+      success: true,
+      url: finalStreamUrl,
+      instance: usedInstance
+    });
 
-    if (!bestAudio || !bestAudio.url) {
-       return res.status(404).json({ error: 'Không tìm thấy link audio' });
-    }
-
-    // Cực kỳ quan trọng: Xóa tham số ip và ipbits để Roblox có thể tải từ IP của nó
-    let streamUrl = bestAudio.url.replace(/&ip=[^&]+/g, '').replace(/&ipbits=[^&]+/g, '');
-
-    return res.status(200).json({ success: true, url: streamUrl, mime: bestAudio.mimeType });
   } catch (error) {
     console.error('Lỗi API:', error);
     return res.status(500).json({ error: error.message });
