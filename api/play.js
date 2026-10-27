@@ -14,19 +14,22 @@ export default async function handler(req, res) {
 
   try {
     // Bước 1: Xin một CDN ngẫu nhiên từ SaveTube
-    let cdnUrl = 'https://cdn401.savetube.vip'; // Dự phòng
+    let cdnUrl = 'https://cdn401.savetube.vip'; 
     try {
       const cdnRes = await fetch('https://media.savetube.vip/api/random-cdn', { headers: commonHeaders });
       const cdnData = await cdnRes.json();
       if (cdnData && cdnData.cdn) {
-        cdnUrl = cdnData.cdn;
+        // FIX LỖI: Tự động thêm https:// nếu API trả về thiếu
+        cdnUrl = cdnData.cdn.startsWith('http') ? cdnData.cdn : `https://${cdnData.cdn}`;
       }
     } catch (e) {
       console.log('Lỗi lấy CDN, dùng mặc định...');
     }
 
+    // Đảm bảo không bị dư dấu / ở cuối
+    if (cdnUrl.endsWith('/')) cdnUrl = cdnUrl.slice(0, -1);
+
     // Bước 2: Gửi yêu cầu tải nhạc đến CDN
-    // (Mình đang đoán cấu trúc Payload là { url: ... }, nếu lỗi bạn xem hướng dẫn bên dưới)
     const downloadRes = await fetch(`${cdnUrl}/download`, {
       method: 'POST',
       headers: {
@@ -34,7 +37,8 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        url: url 
+        url: url,
+        format: 'mp3' // Thêm format cho chắc chắn
       })
     });
 
@@ -50,9 +54,11 @@ export default async function handler(req, res) {
         source: 'SAVETUBE' 
       });
     } else {
+      // Nếu API không trả về link, in ra chi tiết để debug
       return res.status(500).json({ 
         error: 'API không trả về link hợp lệ', 
-        detail: downloadData 
+        detail: downloadData,
+        cdn_used: cdnUrl
       });
     }
 
